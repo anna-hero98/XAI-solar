@@ -23,6 +23,7 @@ import joblib
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.multioutput import MultiOutputRegressor
@@ -77,6 +78,7 @@ def import_SOLETE_data(Control_Var, PVinfo, WTinfo):
     if Control_Var["SOLETE_builvsimport"]=='Build':
         
         df=pd.read_hdf(name) #import the Raw SOLETE based on the selected resolution
+        #import the Raw SOLETE based on the selected resolution
         print("SOLETE was imported:")
         print("    -resolution: ", Control_Var['resolution'])
         print("    -version: Original. \n")
@@ -84,7 +86,7 @@ def import_SOLETE_data(Control_Var, PVinfo, WTinfo):
         Control_Var['OriginalFeatures']=list(df.columns)
         
         print("SOLETE was imported with a resolution of: ", Control_Var['resolution'], "\n")
-        
+        print(df.head)
         ExpandSOLETE(df, [PVinfo, WTinfo], Control_Var)
         
         if Control_Var["SOLETE_save"]==True:
@@ -105,14 +107,16 @@ def import_SOLETE_data(Control_Var, PVinfo, WTinfo):
         #something that was not in the import file, execution is killed with an error message
             if col not in df.columns: 
                 error_msg(key = "missing_feature_expanded_SOLETE")
-        
+        print(df.head)
+
         print("")
         for col in df.columns: #the undesired columns are removed
         #undersired columns are those within the imported file not appearing in Control_Var['PossibleFeatures']
             if col not in Control_Var['PossibleFeatures']: 
                 df = df.drop(col, axis=1)
                 print("Dropped col: ", col)           
-        
+                print("after drop" + df.head)
+
         print("\n")
         
     return df
@@ -286,6 +290,8 @@ def PV_Performance_Model(data, PVinfo, colirra='POA Irr[kW1m2]', coltemp='TEMPER
     DATA_PV['eff_max_P'] = [max(DATA_PV['eff_P'].loc['A']), max(DATA_PV['eff_P'].loc['B'])] #W maximum power output of the inverter
     
     Results = pd.DataFrame(index = data.index)
+
+    print("PV Performance Model DF" + Results)
     
     for pv in DATA_PV.index:
         #Temperature Module
@@ -457,7 +463,9 @@ def Rincon_Pombo_ThermodynamicModel(data, pv, verbose=0):
     sys.stdout.write('\r'+msg)    
     print("")
     
-    
+    print("Rincon_Pombo_ThermodynamicModel df")
+    print(df)
+
     return df
 
 def PreProcessDataset(data, control):
@@ -572,17 +580,38 @@ def PreProcessDataset(data, control):
         #There are a number of operations diverging from RF and SVM compared to ANN
     if control['MLtype'] in ['RF', 'SVM']:        
         
+        intrinsic_feature = control['IntrinsicFeature']
+
+                # Remove IntrinsicFeature from X_dict if it exists
+        if intrinsic_feature in X_dict:
+            print(f"Removing {intrinsic_feature} from X...")
+            del X_dict[intrinsic_feature]
+
+        # Ensure unique column names before concatenation
+        for x in X_dict:
+            X_dict[x].columns = [f"{col}_{x}" for col in X_dict[x].columns]
+            print("Unique column names ensured")
+
         # First we concatenate all arrays by the number of variables as columns
         X = pd.concat([X_dict[x] for x in X_dict], axis=1)
         Y = pd.concat([Y_dict[x] for x in Y_dict], axis=1)
         
         #the column names must be updated 
         xcols = X.columns
+
         ycols = Y.columns
         
         #Then we contact the arrays into a single DataFrame in order to remove al rows with nans
-        XY=pd.concat([X,Y], axis=1).dropna(axis=0, how='any')
-        
+        # Check and remove duplicate column names
+        X = X.loc[:, ~X.columns.duplicated()]
+        Y = Y.loc[:, ~Y.columns.duplicated()]
+
+        # Align indices before concatenation
+        X, Y = X.align(Y, join="inner", axis=0)
+
+        # Now concatenate safely
+        XY = pd.concat([X, Y], axis=1).dropna(axis=0, how='any')
+        print("preprocess df:\n", XY.head())
         del X, Y #done to release memory
         
         # split the dataset into training and testing. In general, ensemble methods do not require validation set (unlike ANN)
@@ -715,7 +744,7 @@ def PreProcessDataset(data, control):
             
     else:
         print("\n\n\n WARNING: Your ML method is not supported by the 'PreProcessDataset' function.\n\n")
-    
+        print("Pre process end. ML_DATA =", ML_DATA, "Scaler =", Scaler)
     return ML_DATA, Scaler
 
 def series_to_forecast(data, n_in, n_out, dropnan=True):
@@ -843,7 +872,7 @@ def PrepareMLmodel(control, ml_data):
             ML=load_model(filename)
         print("...Done\n")
     
-        
+    print(f"Prepared model: {ML}")
     return ML
 
 
@@ -865,13 +894,39 @@ def train_LSTM(data, control):
     pre=control["PRE"]
     hor=control["H"]
     features= control["PossibleFeatures"].copy()
-    features.remove(control["IntrinsicFeature"])
+    """
+        # Index der zu entfernenden Spalte finden
+    if control["IntrinsicFeature"] in data["xcols"]:
+        idx = data["xcols"].index(control["IntrinsicFeature"])
+        print(f"Entferne Spalte {control['IntrinsicFeature']} an Index {idx} aus X_TRAIN...")
+        
+        # Spalte aus X_TRAIN löschen
+        data["X_TRAIN"] = np.delete(data["X_TRAIN"], idx, axis=2)
+        data['X_VAL'] = np.delete(data["X_VAL"], idx, axis=2)
+        data['X_TEST'] = np.delete(data["X_TEST"], idx, axis=2)
+
+
+        # Spalte auch aus den Spaltennamen entfernen
+        data["xcols"].remove(control["IntrinsicFeature"])
+        
+        print("Spalte erfolgreich entfernt!")
+    else:
+        print(f"Spalte {control['IntrinsicFeature']} nicht in X_TRAIN gefunden!")
+    """
+    #features.remove(control["IntrinsicFeature"])
+    print("Shape von data['X_TRAIN']:", data['X_TRAIN'].shape)
+    print("Gesamtzahl der Elemente:", data['X_TRAIN'].size)
+    print("Erwartete Anzahl an Elementen:", 7660 * 6 * 17)
+
+    print("Shape von data['X_VAL'] VOR reshape:", data['X_VAL'].shape)
+    print("Gesamtzahl der Elemente:", data['X_VAL'].size)
+    print("Erwartete Anzahl an Elementen:", 2189 * 6 * 17)
+
+    train_data = data['X_TRAIN'].reshape(data['X_TRAIN'].shape[0], pre+1, len(features))
+    validation_data = data['X_VAL'].reshape(data['X_VAL'].shape[0], pre+1, len(features))
     
-    train_data = data['X_TRAIN'].values.reshape(len(data['X_TRAIN'].index), pre+1, len(features))
-    validation_data = data['X_VAL'].values.reshape(len(data['X_VAL'].index), pre+1, len(features))
-    
-    train_target = data['Y_TRAIN'].values.reshape(len(data['Y_TRAIN'].index),hor)
-    validation_target = data['Y_VAL'].values.reshape(len(data['Y_VAL'].index),hor)
+    train_target = data['Y_TRAIN'].reshape(data['Y_TRAIN'].shape[0],hor)
+    validation_target = data['Y_VAL'].reshape(data['Y_VAL'].shape[0], hor)
     
     ##### Designing Neuronal Network #######
     ML = Sequential() #initialize
@@ -975,17 +1030,43 @@ def train_CNN_LSTM(data, control):
     returns 
     ML -> the trained LSTM model
     ANN_training -> the history of the fit
-    """
+    
+           # Index der zu entfernenden Spalte finden
+    if control["IntrinsicFeature"] in data["xcols"]:
+        idx = data["xcols"].index(control["IntrinsicFeature"])
+        print(f"Entferne Spalte {control['IntrinsicFeature']} an Index {idx} aus X_TRAIN...")
+        
+        # Spalte aus X_TRAIN löschen
+        data["X_TRAIN"] = np.delete(data["X_TRAIN"], idx, axis=2)
+        data['X_VAL'] = np.delete(data["X_VAL"], idx, axis=2)
+        data['X_TEST'] = np.delete(data["X_TEST"], idx, axis=2)
+
+
+        # Spalte auch aus den Spaltennamen entfernen
+        data["xcols"].remove(control["IntrinsicFeature"])
+        
+        print("Spalte erfolgreich entfernt!")
+    else:
+        print(f"Spalte {control['IntrinsicFeature']} nicht in X_TRAIN gefunden!")
+"""
+    print("Shape von data['X_TRAIN']:", data['X_TRAIN'].shape)
+    print("Gesamtzahl der Elemente:", data['X_TRAIN'].size)
+    print("Erwartete Anzahl an Elementen:", 7660 * 6 * 17)
+
+    print("Shape von data['X_VAL'] VOR reshape:", data['X_VAL'].shape)
+    print("Gesamtzahl der Elemente:", data['X_VAL'].size)
+    print("Erwartete Anzahl an Elementen:", 2189 * 6 * 17)
+
     pre=control["PRE"]
     hor=control["H"]
     features= control["PossibleFeatures"].copy()
-    features.remove(control["IntrinsicFeature"])
+    #features.remove(control["IntrinsicFeature"])
+
+    train_data = data['X_TRAIN'].reshape(data['X_TRAIN'].shape[0], pre+1, len(features))
+    validation_data = data['X_VAL'].reshape(data['X_VAL'].shape[0], pre+1, len(features))
     
-    train_data = data['X_TRAIN'].values.reshape(len(data['X_TRAIN'].index), pre+1, len(features))
-    validation_data = data['X_VAL'].values.reshape(len(data['X_VAL'].index), pre+1, len(features))
-    
-    train_target = data['Y_TRAIN'].values.reshape(len(data['Y_TRAIN'].index),hor)
-    validation_target = data['Y_VAL'].values.reshape(len(data['Y_VAL'].index),hor)
+    train_target = data['Y_TRAIN'].reshape(data['Y_TRAIN'].shape[0],hor)
+    validation_target = data['Y_VAL'].reshape(data['Y_VAL'].shape[0], hor)
     
     ##### Designing Neuronal Network #######
     ML = Sequential() #initialize
@@ -1140,10 +1221,10 @@ def post_process(control, RESULTS):
     residual=RESULTS["Observed"] - RESULTS["Forecasted"] 
     
     #raw values gives us the value per horizon time step
+    mae = pd.DataFrame(mean_absolute_error(RESULTS["Observed"], RESULTS["Forecasted"], multioutput='raw_values'), columns=["Forecaster"]) 
     rmse = pd.DataFrame(mean_squared_error(RESULTS["Observed"], RESULTS["Forecasted"], squared=False, multioutput='raw_values'), columns=["Forecaster"])
-    mae = pd.DataFrame(mean_absolute_error(RESULTS["Observed"], RESULTS["Forecasted"], multioutput='raw_values'), columns=["Forecaster"])
     mse = pd.DataFrame(mean_squared_error(RESULTS["Observed"], RESULTS["Forecasted"], squared=True, multioutput='raw_values'), columns=["Forecaster"])
-    
+
     for error in ["Persistence"]: #["Persistence", "Persistence24"]
         rmse[error] = mean_squared_error(RESULTS["Observed"], RESULTS[error], squared=False, multioutput='raw_values')
         mae[error] = mean_absolute_error(RESULTS["Observed"], RESULTS[error], multioutput='raw_values')
@@ -1161,8 +1242,8 @@ def post_process(control, RESULTS):
     plt.ylim(ymin, ymax) 
     plt.ylabel( "RMSE" )
     plt.xlabel( "Time Horizon" )
-    plt.title("RMSE=" + str(round(rmse.mean()[0], 3)) + " MAE = " + str(round(mae.mean()[0], 3))\
-              +" MSE = "+ str(round(mse.mean()[0], 3)))
+    plt.title("RMSE=" + str(round(rmse.mean().iloc[0], 3)) + " MAE = " + str(round(mae.mean().iloc[0], 3))\
+              +" MSE = "+ str(round(mse.mean().iloc[0], 3)))
     plt.legend(rmse.columns)
     
     filename = "RMSE_" + control["MLtype"]
