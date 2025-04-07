@@ -841,7 +841,7 @@ def PrepareMLmodel(control, ml_data):
             plt.plot(ANN_training.history[ "loss" ])
             plt.plot(ANN_training.history[ "val_loss" ])
             plt.grid()
-            plt.title("Model train vs validation loss")
+            plt.title("Model Trainings- vs Validierungsverlust")
             plt.ylabel( "Loss" )
             plt.xlabel( "Epoch" )
             plt.legend([ "Train" , "Validation"], loc= "upper right" )

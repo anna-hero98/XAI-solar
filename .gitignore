@@ -4,3 +4,5 @@
 *.csv
 *.joblib
 *.zip
+*.png
+*.pdf

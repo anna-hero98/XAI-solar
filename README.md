@@ -16,13 +16,13 @@ Version v2.0 was released months after finalising my employment at DTU, therefor
 
 # Dependencies
 1. Python 3.9.12 
-2. Pandas 1.5.0 
-3. Numpy 1.23.1
-4. Matplotlib 3.6.0
-5. Scikit-Learn 1.1.2 
-6. Keras 2.10.0
-7. TensorFlow 2.10.0
-8. CoolProp 6.4.3   
+2. Pandas==1.5.0 
+3. Numpy==1.23.1
+4. Matplotlib==3.6.0
+5. Scikit-Learn==1.1.2 
+6. Keras==2.10.0
+7. TensorFlow==2.10.0
+8. CoolProp==6.4.3   
 9. The SOLETE dataset [1] -> https://doi.org/10.11583/DTU.17040767 
 
 # How to use

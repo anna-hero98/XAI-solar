@@ -14,6 +14,9 @@ import lime.lime_tabular
 import quantus
 from lime.lime_tabular import LimeTabularExplainer
 from functools import partial
+#import timeshap.explainer as tse
+#import timeshap.plot as tsp
+
 
 
 # TensorFlow/Keras imports
@@ -53,7 +56,7 @@ Control_Var = {
         'HoursOfDay', 'MeanPrevH', 'StdPrevH',
         'MeanWindSpeedPrevH', 'StdWindSpeedPrevH'
     ],
-    'MLtype' : 'CNN_LSTM',      # One of: 'RF', 'SVM', 'LSTM', 'CNN', or 'CNN_LSTM'
+    'MLtype' : 'CNN',      # One of: 'RF', 'SVM', 'LSTM', 'CNN', or 'CNN_LSTM'
     'H' : 10,              # Forecast horizon in number of samples
     'PRE' : 5,             # Number of previous samples used as input
 }
@@ -77,51 +80,50 @@ SVM = {
     'epsilon' : 0.1,
 }
 
-LSTM_params = {
-    '_description_' : 'LSTM parameters',
-    'n_batch' : 16,
-    'epo_num' : 10, #changed from 1000 to 10
-    'Neurons' : [15, 15, 15],
-    'Dense'  : [0, 0],
-    'ActFun' : 'tanh',
-    'LossFun' : 'mean_absolute_error',
-    'Optimizer' : 'adam'
-}
+LSTM_params = {'_description_' : 'Holds the values related to LSTM ANN design',
+        'n_batch' : 16, #int <-> # number of samples fed together - helps with paralelization  (smaller takes longer, improves performance carefull with overfitting)
+        'epo_num' : 145,# - epoc number of iterations of each batch - same reasoning as for the batches'
+        'Neurons' : [15,15,15], #number of neurons per layer <-> you can feed up to three layers using list e.g. [15, 10] makes two layers of 15 and 10 neurons, respectively.
+        'Dense'  : [0, 0], #number of dense layers and neurons in them. If left as 0 they are not created.
+        'ActFun' : 'tanh', #sigmoid, tanh, elu, relu - activation function as a str 
+        'LossFun' : 'mean_absolute_error', #mean_absolute_error or mean_squared_error
+        'Optimizer' : 'adam' # adam RMSProp - optimization method adam is the default of the guild 
+        }
 
-CNN_params = {
-    '_description_' : 'CNN parameters',
-    'n_batch' : 16,
-    'epo_num' : 3,
-    'filters' : 32,
-    'kernel_size' : 2,
-    'pool_size' : 3,
-    'Dense'  : [10, 10],
-    'ActFun' : 'tanh',
-    'LossFun' : 'mean_absolute_error',
-    'Optimizer' : 'adam'
-}
+CNN = {'_description_' : 'Holds the values related to LSTM NN design',
+        'n_batch' : 16, #see note in LSTM
+        'epo_num' : 3, #see note in LSTM
+        'filters' : 32, #number of nodes per layer, usually top layers have higher values
+        'kernel_size' : 2, #size of the filter used to extract features
+        'pool_size' : 3, #down sampling feature maps in order to gain robustness to changes
+        'Dense'  : [10, 10],#see note in LSTM
+        'ActFun' : 'tanh', #see note in LSTM
+        'LossFun' : 'mean_absolute_error', #see note in LSTM
+        'Optimizer' : 'adam' #see note in LSTM
+        }
 
-CNN_LSTM_params = {
-    '_description_' : 'CNN-LSTM parameters',
-    'n_batch' : 16,
-    'epo_num' : 10, #changed from 1000 to 10
-    'filters' : 32,
-    'kernel_size' : 3,
-    'pool_size' : 2,
-    'Dense'  : [0, 0],
-    'CNNActFun' : 'tanh',
-    'Neurons' : [10, 15, 10],
-    'LSTMActFun' : 'sigmoid',
-    'LossFun' : 'mean_absolute_error',
-    'Optimizer' : 'adam'
-}
+CNN_LSTM = {'_description_' : 'Holds the values related to LSTM NN design',
+        'n_batch' : 16, #see note in LSTM
+        'epo_num' : 232, #see note in LSTM        
+        'filters' : 32, #see note in CNN
+        'kernel_size' : 3, #see note in CNN
+        'pool_size' : 2, #see note in CNN
+        'Dense'  : [0, 0], #see note in LSTM
+        'CNNActFun' : 'tanh', #see note in CNN
+        
+        'Neurons' : [10,15,10], #see note in LSTM
+        'LSTMActFun' : 'sigmoid', #see note in LSTM
+        
+        'LossFun' : 'mean_absolute_error', #see note in LSTM
+        'Optimizer' : 'adam' #see note in LSTM
+        }
 
 # Store all in Control_Var
 Control_Var['RF'] = RF
 Control_Var['SVM'] = SVM
-Control_Var['LSTM'] = LSTM_params
-Control_Var['CNN'] = CNN_params
-Control_Var['CNN_LSTM'] = CNN_LSTM_params
+Control_Var['LSTM'] = LSTM
+Control_Var['CNN'] = CNN
+Control_Var['CNN_LSTM'] = CNN_LSTM
 
 PVinfo, WTinfo = import_PV_WT_data()
 DATA=import_SOLETE_data(Control_Var, PVinfo, WTinfo)
@@ -132,10 +134,10 @@ ML_DATA, Scaler = PreProcessDataset(DATA, Control_Var)
 
 #%% Train, Evaluate, Test
 model = PrepareMLmodel(Control_Var, ML_DATA) #train or import model
-results = TestMLmodel(Control_Var, ML_DATA, model, Scaler)
+#results = TestMLmodel(Control_Var, ML_DATA, model, Scaler)
 
 #%% Post-Processing
-analysis = post_process(Control_Var, results)
+#analysis = post_process(Control_Var, results)
 
 ### from here on my code
 print("==== Logging ML_DATA  ====")
@@ -164,24 +166,40 @@ print("Number of features:", len(feature_names))
 print("Number of Features Expected by LIME:", X_train.shape[2])
 print("Number of Feature Names:", len(feature_names))
 
+# Einmalig die Indizes berechnen (z.B. in einem Setup-Skript)
+random.seed(42)
+bg_indices = random.sample(range(X_test.shape[0]), 100)
+
 # Extract IntrinsicFeature in our case always P_Solar[kW]
 idx_remove = Control_Var['IntrinsicFeature']  
 
-# The intrinsic feature should be removed from the complete feature list
-if idx_remove in Control_Var['PossibleFeatures']:
-    idx_remove = Control_Var['PossibleFeatures'].index(idx_remove)  
-else:
-    idx_remove = None  
+# The intrinsic feature should be removed from the complete feature list nothing happens here apart from index
+#if idx_remove in Control_Var['PossibleFeatures']:
+#    idx_remove = Control_Var['PossibleFeatures'].index(idx_remove)  
+#else:
+#    idx_remove = None  
 
 
-print("idx_remove:", idx_remove)  
-
-
+#print("idx_remove:", idx_remove)  
 
 X_train_re = X_train.reshape(X_train.shape[0], -1)
 X_test_re = X_test.reshape(X_test.shape[0], -1)
+#for feature in feature_names:
+ #   print(f"\n📊 Plotting ICE for feature: {feature}")
+  #  save_combined_pdp_ice_all_timesteps(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature=feature, Control_Var=Control_Var)
 
 
+"""
+kurz auskommntirt
+plot_combined_pdp_ice(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature='GHI[kW1m2]',timestep=5)
+
+plot_ice_timeseries_feature(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature='GHI[kW1m2]',time_index=5)  # z. B. Mittag
+
+
+save_pdp_plots_to_pdf(model=model,ML_DATA=ML_DATA,feature_names=feature_names,features_to_plot=feature_names,Control_Var=Control_Var)
+
+plot_pdp_keras_model(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature='GHI[kW1m2]')
+"""
 # Initialize LIME Explainer
 explainer = LimeTabularExplainer(
     training_data=X_train.reshape(X_train_re.shape[0], -1),  # Flatten only for LIME explainer
@@ -190,28 +208,57 @@ explainer = LimeTabularExplainer(
     discretize_continuous=False
 )
 
-# Select a test instance
-idx = np.random.randint(0, X_test_re.shape[0])
-test_instance = X_test_re[idx].reshape(1, -1)
+# Setzen Sie den Seed für reproduzierbare Ergebnisse
+np.random.seed(42)
 
+# Annahme: X_train, X_test_re und feature_names sind bereits definiert.
+# X_train_flat ist die geflattete Version von X_train für LIME.
+X_train_flat = X_train.reshape(X_train.shape[0], -1)
 
-predict_fn = partial(lime_predict, X_train=X_train, model=model)
-explanation = explainer.explain_instance(test_instance[0], predict_fn)
+# Erzeugen Sie die Feature-Namen für LIME (jeder Zeitschritt als eigene Spalte)
+lime_feature_names = [f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])]
 
-# Visualisiere die Erklärung
-explanation.as_pyplot_figure()
-plt.show()
+# Initialisieren Sie den LIME Explainer
+explainer = lime.lime_tabular.LimeTabularExplainer(
+    training_data=X_train_flat,
+    feature_names=lime_feature_names,
+    mode='regression',
+    discretize_continuous=False
+)
 
-if Control_Var['IntrinsicFeature'] in feature_names:
-    feature_names.remove(Control_Var['IntrinsicFeature'])
+# Wählen Sie fünf Testinstanzen aus – die Indizes werden in einer Liste gespeichert
+selected_indices = np.random.choice(range(X_test_re.shape[0]), 5, replace=False)
+print("Selected test instance indices:", selected_indices)
+
+# Erzeugen Sie eine PDF-Datei, in der alle LIME-Erklärungen gespeichert werden
+pdf_filename = f"{ml_type}_LIME_Explanations.pdf"
+with PdfPages(pdf_filename) as pdf:
+    for idx in selected_indices:
+        # Wandle die Testinstanz in ein 1D-Array (gefaltet) um, wie LIME es benötigt
+        test_instance = X_test_re[idx].reshape(1, -1)
+        # Definieren Sie hier Ihre predict-Funktion (z.B. mit partial), die LIME verwenden soll
+        predict_fn = partial(lime_predict, X_train=X_train, model=model)
+        explanation = explainer.explain_instance(test_instance[0], predict_fn)
+        # Erzeugen Sie die matplotlib-Figur aus der LIME-Erklärung
+        fig = explanation.as_pyplot_figure()
+        # Setzen Sie einen Supertitle, der den Index der Instanz kennzeichnet
+        fig.suptitle(f"{ml_type} LIME Explanation for Test Instance {idx}", fontsize=14)
+        pdf.savefig(fig)
+        plt.close(fig)
+
+print(f"LIME explanations saved in '{pdf_filename}'")
+#if Control_Var['IntrinsicFeature'] in feature_names:
+ #   feature_names.remove(Control_Var['IntrinsicFeature'])
  #Step 4: Debugging Outputs
-print("Updated feature_names:", feature_names)
+#print("Updated feature_names:", feature_names)
 # ----------------------------------------------
 #is_keras_model = (ml_type in ['LSTM', 'CNN', 'CNN_LSTM'])
 
 #if is_keras_model:
     # Rufen Sie die obige Funktion auf
-#shap_vals = get_explanations_2D(model, ML_DATA, ML_DATA['X_TEST'], feature_names=feature_names, background_samples=10, Control_Var=Control_Var, idx_remove=idx_remove)
+
+shap_vals = get_explanations_2D(model, ML_DATA, ML_DATA['X_TEST'], feature_names=feature_names, background_samples=100, Control_Var=Control_Var, bg_indices=bg_indices)
+
     
 #else:
  #   print("SHAP DeepExplainer usage is not directly supported for non-Keras models.\n"
@@ -248,6 +295,7 @@ solar_feats = ['GHI[kW1m2]', 'POA Irr[kW1m2]', 'P_Solar[kW]']
 # Calls the counterfactual
 counterfactual_data = generate_counterfactuals(ML_DATA, feature_names, solar_feats, reduction_factor=0.5)
 
+"""
 if idx_remove is not None:
     ML_DATA['X_TEST'][..., idx_remove] = 0  # Set feature to zero instead of deleting
     counterfactual_data['X_TEST'][..., idx_remove] = 0  # Same for counterfactual data
@@ -259,39 +307,66 @@ if idx_remove is not None:
 
     X_Test = ML_DATA['X_TEST'].copy()
     X_test[..., idx_remove] = 0
+"""
 
 #has to be set to zero, since otherwise it causes issues with the original logics. That is why it can't be deleted
-
-# Liste der solarbezogenen Features (werden um -50 % verändert)
+# Gemeinsamer Counterfactual für alle Solar-Features
 solar_feats = ['GHI[kW1m2]', 'POA Irr[kW1m2]', 'P_Solar[kW]']
 
-# Alle solar features einzeln -50 %
-for feature in solar_feats:
-    generate_and_plot_single_counterfactual(
-        ML_DATA=ML_DATA,
-        model=model,
-        feature_names=feature_names,
-        feature=feature,
-        change_factor=0.5,
-        idx_remove=idx_remove,
-        is_keras_model=is_keras_model,
-        Control_Var=Control_Var
-    )
+generate_and_plot_single_counterfactual(
+    ML_DATA=ML_DATA,
+    model=model,
+    feature_names=feature_names,
+    feature=solar_feats,  
+    change_factor=0.5,
+    idx_remove=idx_remove,
+    is_keras_model=is_keras_model,
+    Control_Var=Control_Var,
+    bg_indices=bg_indices
+)
+
+generate_and_plot_single_counterfactual(
+    ML_DATA=ML_DATA,
+    model=model,
+    feature_names=feature_names,
+    feature=solar_feats,  
+    change_factor=1.5,
+    idx_remove=idx_remove,
+    is_keras_model=is_keras_model,
+    Control_Var=Control_Var,
+    bg_indices=bg_indices
+)
+
+
 
 # Jetzt alle Features aus feature_names jeweils -50 % und +50 %
 for feature in feature_names:
     for factor in [0.5, 1.5]:
-        generate_and_plot_single_counterfactual(
-            ML_DATA=ML_DATA,
-            model=model,
-            feature_names=feature_names,
-            feature=feature,
-            change_factor=factor,
-            idx_remove=idx_remove,
-            is_keras_model=is_keras_model,
-            Control_Var=Control_Var
-        )
+        generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, feature, factor, Control_Var, idx_remove=None, is_keras_model=True, bg_indices=bg_indices)
 
+
+# Apply the counterfactual transformation
+counterfactual_data, modified_indices = generate_counterfactuals_highest_values(ML_DATA, column_index=4, increase_factor=1.5, num_samples=100)
+
+MLtype = Control_Var['MLtype']
+is_keras = MLtype in ['LSTM', 'CNN', 'CNN_LSTM']
+
+if is_keras:
+    original_preds = model.predict(ML_DATA['X_TEST'])
+    counterfactual_preds = model.predict(counterfactual_data['X_TEST'])
+else:
+    X_test_2D = ML_DATA['X_TEST'].reshape((ML_DATA['X_TEST'].shape[0], -1))
+    original_preds = model.predict(X_test_2D)
+
+    X_test_cf_2D = counterfactual_data['X_TEST'].reshape((counterfactual_data['X_TEST'].shape[0], -1))
+    counterfactual_preds = model.predict(X_test_cf_2D)
+
+
+
+# Call the function to generate plots
+plot_counterfactual_comparison(original_preds, counterfactual_preds, modified_indices, ControlVar=Control_Var)
+
+"""
 # Make predictions on original vs. counterfactual if desired:
 if is_keras_model:
     original_preds = model.predict(ML_DATA['X_TEST'])
@@ -310,7 +385,7 @@ else:
     print("Skipping counterfactual predictions for non-Keras model (RF/SVM) in this demo.")
 
 print("Done!")
-
+"""
 def generate_counterfactuals_targeted(ML_DATA, Control_Var, feature_changes, sample_indices):
     """
     Erzeugt Counterfactual-Daten, indem ausgewählte Merkmale (Features) nur
@@ -712,7 +787,7 @@ def custom_partial_dependence(
         }
     else:
         raise ValueError("custom_partial_dependence demo unterstützt derzeit nur 1 oder 2 Features.")
-if isinstance(X_Test, list):
+if isinstance(X_test, list):
     print(" x test is converted to array")
     X_test = np.array(X_test)  
 # === 1D-PDP für ein bestimmtes Feature (z.B. Feature 0) ===
@@ -895,112 +970,7 @@ shap_values = explain_model(Control_Var, model, X_test, feature_names, idx_remov
 
 
 
-import numpy as np
-import matplotlib.pyplot as plt
 
-def generate_counterfactuals_highest_values(ML_DATA, column_index=7, increase_factor=1.5, num_samples=100):
-    """
-    Generate counterfactuals by increasing the selected feature (column_index)
-    by a specified factor for the top N highest values.
-
-    Parameters:
-    ----------
-    ML_DATA : dict
-        Dictionary containing ML input data, e.g., 'X_TEST'.
-    column_index : int
-        The index of the feature column to modify.
-    increase_factor : float
-        Factor by which to increase the feature values (default: 1.5 = +50%).
-    num_samples : int
-        Number of highest values to modify (default: 100).
-
-    Returns:
-    --------
-    counterfactual_data : dict
-        New dataset with modified feature values.
-    modified_indices : list
-        Indices of modified samples for tracking.
-    """
-
-    X_test = ML_DATA['X_TEST'].copy()  # Copy to avoid modifying the original data
-
-    # Identify top N highest values in the selected column
-    top_indices = np.argsort(X_test[:, column_index])[-num_samples:]
-
-    # Modify the selected feature
-    X_test[top_indices, column_index] *= increase_factor  # Increase by specified factor
-
-    # Create a new dataset dictionary
-    counterfactual_data = ML_DATA.copy()
-    counterfactual_data['X_TEST'] = X_test  # Replace only the test data
-
-    return counterfactual_data, top_indices
-
-
-# Apply the counterfactual transformation
-counterfactual_data, modified_indices = generate_counterfactuals_highest_values(ML_DATA, column_index=4, increase_factor=1.5, num_samples=100)
-
-MLtype = Control_Var['MLtype']
-is_keras = MLtype in ['LSTM', 'CNN', 'CNN_LSTM']
-
-if is_keras:
-    original_preds = model.predict(ML_DATA['X_TEST'])
-    counterfactual_preds = model.predict(counterfactual_data['X_TEST'])
-else:
-    X_test_2D = ML_DATA['X_TEST'].reshape((ML_DATA['X_TEST'].shape[0], -1))
-    original_preds = model.predict(X_test_2D)
-
-    X_test_cf_2D = counterfactual_data['X_TEST'].reshape((counterfactual_data['X_TEST'].shape[0], -1))
-    counterfactual_preds = model.predict(X_test_cf_2D)
-
-def plot_counterfactual_comparison(original_preds, counterfactual_preds, modified_indices):
-    """
-    Plot the difference between original and counterfactual predictions.
-
-    Parameters:
-    ----------
-    original_preds : np.ndarray
-        Model predictions on the original dataset.
-    counterfactual_preds : np.ndarray
-        Model predictions on the counterfactual dataset.
-    modified_indices : list
-        Indices where modifications were applied.
-    """
-    plt.figure(figsize=(10,5))
-
-    # Compute mean if predictions are 2D (multi-horizon outputs)
-    orig_mean = original_preds.mean(axis=1) if original_preds.ndim == 2 else original_preds
-    cf_mean = counterfactual_preds.mean(axis=1) if counterfactual_preds.ndim == 2 else counterfactual_preds
-
-    plt.plot(orig_mean, label='Original Predictions', alpha=0.7)
-    plt.plot(cf_mean, label='Counterfactual Predictions (+50% Column XY)', alpha=0.7)
-
-    # Highlight modified samples
-    plt.scatter(modified_indices, orig_mean[modified_indices], color='red', label='Modified Samples (Original)', zorder=5)
-    plt.scatter(modified_indices, cf_mean[modified_indices], color='green', label='Modified Samples (CF)', zorder=6)
-
-    plt.xlabel('Test Sample Index')
-    plt.ylabel('Predicted Output')
-    plt.title('Comparison: Original vs. Counterfactual Predictions')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-    # Plot differences
-    plt.figure(figsize=(10,3))
-    delta = cf_mean - orig_mean
-    plt.plot(delta, label='Difference (CF - Original)', color='blue')
-    plt.axhline(y=0, color='k', linestyle='--')
-    plt.scatter(modified_indices, delta[modified_indices], color='red', label='Modified Samples', zorder=5)
-    plt.xlabel('Test Sample Index')
-    plt.ylabel('Prediction Difference')
-    plt.title('Impact of +50% Increase in Column 7')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-# Call the function to generate plots
-plot_counterfactual_comparison(original_preds, counterfactual_preds, modified_indices)
 
 
 def print_feature_indices(feature_names):
