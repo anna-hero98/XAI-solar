@@ -7,8 +7,9 @@ import quantus
 from lime.lime_tabular import LimeTabularExplainer
 import numpy as np
 import matplotlib.pyplot as plt
-
+import os
 from matplotlib.backends.backend_pdf import PdfPages
+from functools import partial
 
 from Functions import import_SOLETE_data, import_PV_WT_data, PreProcessDataset  
 from Functions import PrepareMLmodel, TestMLmodel, post_process
@@ -16,8 +17,9 @@ from Functions import PrepareMLmodel, TestMLmodel, post_process
 import numpy as np
 from scipy.stats import norm
 
+
 # =============================================================================
-# 1) SAX (Symbolic Aggregate approXimation)
+# 1) SAX-Funktion (unverändert)
 # =============================================================================
 def sax_transform(ts, n_segments=10, alphabet_size=5):
     """
@@ -28,27 +30,24 @@ def sax_transform(ts, n_segments=10, alphabet_size=5):
     ts : np.ndarray
         1D-Zeitreihe (z. B. als np.array).
     n_segments : int, optional
-        Anzahl der Segmente für die Piecewise Aggregate Approximation (Standard: 10).
+        Anzahl der Segmente für die PAA (Standard: 10).
     alphabet_size : int, optional
         Anzahl der Symbole im Alphabet (Standard: 5).
         
     Returns
     -------
     sax_string : list of int
-        Liste von Symbolindizes (0 bis alphabet_size-1), die die Zeitreihe repräsentieren.
+        Liste von Symbolindizes (0 bis alphabet_size-1).
     """
     ts = np.array(ts, dtype=float)
     n = len(ts)
     
     # Schritt 1: Piecewise Aggregate Approximation (PAA)
-    # Teilen in n_segments gleich lange Abschnitte (ggf. letzte Werte interpolieren)
     segment_size = n / n_segments
     paa = []
     for i in range(n_segments):
-        # Bestimmen der Start- und Endindizes (mit Rundung)
         start = int(round(i * segment_size))
         end = int(round((i + 1) * segment_size))
-        # Falls end <= start, erweitern
         if end <= start:
             end = start + 1
         segment_mean = ts[start:end].mean()
@@ -57,17 +56,76 @@ def sax_transform(ts, n_segments=10, alphabet_size=5):
     
     # Schritt 2: Bestimmen der Breakpoints anhand der Normalverteilung
     breakpoints = norm.ppf(np.linspace(0, 1, alphabet_size + 1)[1:-1])
-    # Beispiel: für alphabet_size=5 ergibt dies 4 Breakpoints
     
-    # Schritt 3: Zuordnen der Symbole: 
-    # Jeder PAA-Wert wird anhand der Breakpoints einem Symbol (Index) zugeordnet.
+    # Schritt 3: Zuordnen der Symbole
     sax_string = []
     for value in paa:
-        # np.searchsorted gibt den Einfügeindex zurück
         symbol = np.searchsorted(breakpoints, value)
         sax_string.append(symbol)
-    
     return sax_string
+
+
+# =============================================================================
+# 2) Funktion, die Ihr 3D-Dataset (n_samples, time_steps, n_features)
+#    für jede Instanz in eine 1D-Sequenz flattenet und SAX anwendet.
+# =============================================================================
+def generate_sax_for_dataset(ML_DATA, Control_Var, n_segments=10, alphabet_size=5):
+    """
+    Wendet SAX auf ein mehrdimensionales (3D) Datenset an, indem jede Instanz
+    in eine 1D-Zeitreihe transformiert wird. Anschließend werden die SAX-Indizes
+    für jede Instanz gespeichert.
+
+    Parameter
+    ----------
+    ML_DATA : dict
+        Enthält 'X_TRAIN', 'X_TEST' und ggf. weitere Felder.
+        X_TRAIN und X_TEST haben die Form (n_samples, time_steps, n_features).
+    Control_Var : dict
+        Enthält u.a. 'MLtype' und evtl. 'PossibleFeatures'. Hier primär für Logging.
+    n_segments : int, optional
+        Anzahl der Segmente für die PAA in SAX (Standard: 10).
+    alphabet_size : int, optional
+        Anzahl der Symbole im Alphabet (Standard: 5).
+
+    Returns
+    -------
+    train_sax : list of list of int
+        Für jeden Trainingssample eine Liste von SAX-Symbolen.
+    test_sax : list of list of int
+        Für jeden Testsample eine Liste von SAX-Symbolen.
+    """
+    ml_type = Control_Var.get('MLtype', 'Unknown')
+    print(f"=== Generiere SAX-Repräsentationen für Modelltyp '{ml_type}' ===")
+    
+    X_train_3D = ML_DATA["X_TRAIN"]  # (7660, 6, 18) z. B.
+    X_test_3D = ML_DATA["X_TEST"]    # (1095, 6, 18)
+    
+    print("X_train shape:", X_train_3D.shape)
+    print("X_test shape:", X_test_3D.shape)
+    n_train = X_train_3D.shape[0]
+    n_test = X_test_3D.shape[0]
+    
+    # Jedes Sample in 1D umwandeln: (time_steps * n_features)
+    # Danach via sax_transform -> Symbolische Repräsentation
+    train_sax = []
+    for i in range(n_train):
+        # Flatten (6,18)->(108)
+        ts_1D = X_train_3D[i].reshape(-1)
+        sax_rep = sax_transform(ts_1D, n_segments=n_segments, alphabet_size=alphabet_size)
+        train_sax.append(sax_rep)
+    
+    test_sax = []
+    for i in range(n_test):
+        ts_1D = X_test_3D[i].reshape(-1)
+        sax_rep = sax_transform(ts_1D, n_segments=n_segments, alphabet_size=alphabet_size)
+        test_sax.append(sax_rep)
+    
+    # Beispielhafter Output
+    print(f"Erste Training-SAX-Repräsentation (Sample 0): {train_sax[0]}")
+    print(f"Erste Test-SAX-Repräsentation (Sample 0): {test_sax[0]}")
+    print("Beispielhafte Länge einer SAX-Repräsentation:", len(train_sax[0]))
+    
+    return train_sax, test_sax
 
 # =============================================================================
 # 6) Vereinfachter Shapelet Transform
@@ -352,9 +410,16 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
     )
 
 
+    model_folder = f"./{Control_Var['MLtype']}"
+    os.makedirs(model_folder, exist_ok=True)
+
+  
+
+
 
     agg_filename = f"{Control_Var['MLtype']}_Shap_Aggregated.png"
-    fig.savefig(agg_filename, bbox_inches='tight', dpi=300)
+    agg_filepath = os.path.join(model_folder, agg_filename)
+    fig.savefig(agg_filepath, bbox_inches='tight', dpi=300)
     plt.close(fig)
     print(f"Aggregated SHAP summary plot saved as: {agg_filename}")
 
@@ -384,6 +449,9 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
             # Mit subplots_adjust oder tight_layout genügend Platz für den Titel schaffen.
             # Variante A:
             plt.subplots_adjust(top=0.85)  # je nach Bedarf anpassen (0.8, 0.9 etc.)
+            model_folder = f"./{Control_Var['MLtype']}"
+            agg_filepath = os.path.join(model_folder, per_ts_filename)
+            fig.savefig(agg_filepath, bbox_inches='tight', dpi=300)
             pdf.savefig(fig)
             plt.close(fig)
             plt.colorbar = original_cb
@@ -618,6 +686,139 @@ else:
     print("Skipping Quantus metrics for non-Keras model types (RF/SVM).")
 
     """
+def read_indices_from_file(file_path):
+    """
+    Liest Indizes aus einer Textdatei (eine Zeile pro Index).
+    Gibt eine Liste von Integer-Indizes zurück.
+    """
+    with open(file_path, 'r') as f:
+        lines = f.read().strip().splitlines()
+    return [int(line) for line in lines]
+
+def write_indices_to_file(file_path, indices):
+    """
+    Schreibt die Indizes zeilenweise in eine Textdatei.
+    Beispiel: 
+      12
+      37
+      98
+    """
+    with open(file_path, 'w') as f:
+        for idx in indices:
+            f.write(f"{idx}\n")
+
+def generate_lime_explanations(
+    model,
+    X_train,
+    X_test,
+    feature_names,
+    ml_type,
+    lime_predict_fn,
+    selected_indices=None,
+    selected_indices_file_path='selected_indices.txt',
+    num_instances=5,
+    seed=42
+):
+    """
+    Erzeugt LIME-Erklärungen für ausgewählte Testinstanzen und speichert sie in einer PDF-Datei.
+    Wenn 'selected_indices' nicht explizit übergeben wird, versucht die Funktion, diese 
+    aus 'selected_indices_file_path' zu lesen. Gelingt dies nicht, werden neue Zufallsindizes 
+    gezogen und in der Datei gespeichert.
+
+    Parameter:
+    ----------
+    model : trainiertes ML-Modell
+        Das zu erklärende Modell.
+    X_train : np.ndarray
+        Trainingsdaten (3D-Format).
+    X_test : np.ndarray
+        Testdaten (3D-Format).
+    feature_names : list of str
+        Die ursprünglichen Feature-Namen.
+    ml_type : str
+        Modelltyp, z. B. 'CNN', 'LSTM', ...
+    lime_predict_fn : callable
+        Eine Funktion (Wrapper) für die Vorhersage, damit LIME die Daten im richtigen Format erhält.
+    selected_indices : list of int, optional
+        Manuell übergebene Indizes. Falls nicht gesetzt, wird versucht, sie aus einer Datei zu lesen.
+    selected_indices_file_path : str
+        Pfad zu einer Textdatei, in der die Indizes gespeichert werden oder aus der sie gelesen werden.
+    num_instances : int
+        Anzahl an Instanzen, die zufällig ausgewählt werden, falls keine Indizes übergeben 
+        oder in der Datei gefunden werden.
+    seed : int
+        Zufalls-Seed zur Reproduzierbarkeit.
+
+    Returns:
+    --------
+    used_indices : list of int
+        Die tatsächlich verwendeten Testinstanz-Indizes.
+    """
+
+    # Ordner für das Modell anlegen (falls nicht vorhanden)
+    os.makedirs(f"./{ml_type}", exist_ok=True)
+
+    # Flatten: 3D -> 2D
+    X_train_flat = X_train.reshape(X_train.shape[0], -1)
+    X_test_flat = X_test.reshape(X_test.shape[0], -1)
+
+    # Erweiterte Feature-Namen für LIME (jeder Zeitschritt für jedes Feature)
+    lime_feature_names = [
+        f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])
+    ]
+
+    # Initialisieren des LIME-Explainers
+    explainer = LimeTabularExplainer(
+        training_data=X_train_flat,
+        feature_names=lime_feature_names,
+        mode='regression',
+        discretize_continuous=False
+    )
+
+    # Logik für 'selected_indices':
+    np.random.seed(seed)
+    used_indices = None
+
+    if selected_indices is not None:
+        # Falls manuell übergeben, direkt verwenden.
+        used_indices = selected_indices
+        print("Verwende übergebene Indizes:", used_indices)
+    else:
+        # Falls keine Indizes übergeben, versuchen wir, sie aus der Datei zu lesen:
+        if os.path.exists(selected_indices_file_path):
+            try:
+                used_indices = read_indices_from_file(selected_indices_file_path)
+                print("Verwende zuvor gespeicherte Indizes aus Datei:", used_indices)
+            except Exception as e:
+                print("Fehler beim Lesen der Datei. Generiere neue Zufallsindizes.")
+        
+        # Falls immer noch keine Indizes vorhanden (Datei nicht vorhanden oder fehlerhaft)
+        if not used_indices:
+            used_indices = np.random.choice(
+                range(X_test.shape[0]), 
+                num_instances, 
+                replace=False
+            ).tolist()
+            print("Keine gültigen Indizes gefunden. Verwende neue Zufallsindizes:", used_indices)
+            # Neue Indizes speichern
+            write_indices_to_file(selected_indices_file_path, used_indices)
+
+    # Ausgabe-Datei für die LIME-Erklärungen
+    pdf_path = f"./{ml_type}/{ml_type}_LIME_Explanations.pdf"
+    with PdfPages(pdf_path) as pdf:
+        for idx in used_indices:
+            test_instance = X_test_flat[idx].reshape(1, -1)
+            # Partial-Funktion für LIME, damit X_train und model nicht immer wieder neu übergeben werden
+            predict_fn = partial(lime_predict_fn, X_train=X_train, model=model)
+            explanation = explainer.explain_instance(test_instance[0], predict_fn)
+            
+            fig = explanation.as_pyplot_figure()
+            fig.suptitle(f"{ml_type} LIME Explanation for Test Instance {idx}", fontsize=14)
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    print(f"LIME-Erklärungen wurden in '{pdf_path}' gespeichert.")
+    return used_indices
 
 def generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, feature, change_factor, Control_Var,
                                               idx_remove=None, is_keras_model=True, bg_indices=None):
@@ -715,7 +916,9 @@ def generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, featu
     direction = 'plus' if change_factor > 1 else 'minus'
     pct = int(abs((change_factor - 1)*100))
     file_name = f'{model_name}_counterfactual_combined_{safe_name}_{direction}{pct}pct.png'
-    plt.savefig(file_name, bbox_inches='tight', dpi=300)
+    model_folder = f"./{Control_Var['MLtype']}"
+    agg_filepath = os.path.join(model_folder, file_name)
+    plt.savefig(agg_filepath, bbox_inches='tight', dpi=300)
     plt.close()
     print(f"Saved combined plot: {file_name}")
 
@@ -924,7 +1127,12 @@ def save_combined_pdp_ice_all_timesteps(
     if sample_indices is None:
         sample_indices = np.random.choice(X_test.shape[0], size=20, replace=False)
 
-    with PdfPages(filename) as pdf:
+
+    model_folder = f"./{model_name}"  # e.g. "./CNN"
+    os.makedirs(model_folder, exist_ok=True)  # Ensure folder exists
+
+    pdf_path = os.path.join(model_folder, filename)
+    with PdfPages(pdf_path) as pdf:
         for timestep in range(num_time_steps):
             values = X_test[:, timestep, feature_idx]
             vmin, vmax = np.percentile(values, [1, 99])
@@ -932,20 +1140,19 @@ def save_combined_pdp_ice_all_timesteps(
 
             ice_matrix = []
 
-            plt.figure(figsize=(9, 6))
-
+            fig = plt.figure(figsize=(9, 6)) 
             for i in sample_indices:
                 preds = []
                 for val in value_range:
                     X_temp = X_test[i:i+1].copy()
                     X_temp[0, timestep, feature_idx] = val
-                    pred = model.predict(X_temp, verbose=0).mean()
+                    pred = model.predict(X_temp, verbose=0)[0][timestep]
                     preds.append(pred)
                 ice_matrix.append(preds)
                 plt.plot(value_range, preds, alpha=0.4, linewidth=1)
             for i in sample_indices:
                 x_val = X_test[i, timestep, feature_idx]
-                y_val = model.predict(X_test[i:i+1])[0]
+                y_val = model.predict(X_test[i:i+1], verbose=0)[0][timestep]
                 print("x_val shape:", np.array(x_val).shape)
                 print("y_val shape:", np.array(y_val).shape)
 
@@ -967,7 +1174,14 @@ def save_combined_pdp_ice_all_timesteps(
             plt.ylabel("Modelvorhersage Solarenergie (kW)")
             plt.grid(True)
             plt.tight_layout()
-            pdf.savefig()
+            model_folder = f"./{Control_Var['MLtype']}"
+            #agg_filepath = os.path.join(model_folder, filename)
+            agg_filepath = os.path.join(model_folder,f"{model_name}_PDP_ICE_{feature.replace('[','').replace(']','')}_t{timestep}.png"
+    )
+            plt.savefig(agg_filepath, bbox_inches='tight', dpi=300)   # CHANGED
+
+            #pdf.savefig(agg_filepath, bbox_inches='tight', dpi=300)
+            pdf.savefig(fig, bbox_inches='tight', dpi=300)            # CHANGED
             plt.close()
             print(f"Added PDP+ICE plot for timestep {timestep} to PDF.")
 
@@ -1060,6 +1274,9 @@ def plot_counterfactual_comparison(original_preds, counterfactual_preds, modifie
     model_name = ControlVar['MLtype']
 
     file_name = f'{model_name}_top_100_counterfactual.png'
-    plt.savefig(file_name)
+    model_folder = f"./{ControlVar['MLtype']}"
+    agg_filepath = os.path.join(model_folder, file_name)
+    plt.savefig(agg_filepath, bbox_inches='tight', dpi=300)
+    #plt.savefig(file_name)
     plt.close()
     print(f"Counterfactual comparision.")

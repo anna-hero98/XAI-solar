@@ -134,10 +134,10 @@ ML_DATA, Scaler = PreProcessDataset(DATA, Control_Var)
 
 #%% Train, Evaluate, Test
 model = PrepareMLmodel(Control_Var, ML_DATA) #train or import model
-#results = TestMLmodel(Control_Var, ML_DATA, model, Scaler)
+results = TestMLmodel(Control_Var, ML_DATA, model, Scaler)
 
 #%% Post-Processing
-#analysis = post_process(Control_Var, results)
+analysis = post_process(Control_Var, results)
 
 ### from here on my code
 print("==== Logging ML_DATA  ====")
@@ -177,16 +177,45 @@ idx_remove = Control_Var['IntrinsicFeature']
 #if idx_remove in Control_Var['PossibleFeatures']:
 #    idx_remove = Control_Var['PossibleFeatures'].index(idx_remove)  
 #else:
-#    idx_remove = None  
+#    idx_remove = None 
+# 
 
-
-#print("idx_remove:", idx_remove)  
+train_sax, test_sax = generate_sax_for_dataset(
+        ML_DATA=ML_DATA,
+        Control_Var=Control_Var,
+        n_segments=10,
+        alphabet_size=5
+    )
+    
+    # Beispiel: Auswertung der ersten 3 Training-SAX
+print("Train-SAX[0..2]:")
+for i in range(3):
+    print(f"Sample {i}: {train_sax[i]}")
 
 X_train_re = X_train.reshape(X_train.shape[0], -1)
 X_test_re = X_test.reshape(X_test.shape[0], -1)
-#for feature in feature_names:
- #   print(f"\n📊 Plotting ICE for feature: {feature}")
-  #  save_combined_pdp_ice_all_timesteps(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature=feature, Control_Var=Control_Var)
+
+#print("idx_remove:", idx_remove)  
+# Initialize LIME Explainer
+explainer = LimeTabularExplainer(
+    training_data=X_train.reshape(X_train_re.shape[0], -1),  # Flatten only for LIME explainer
+    feature_names=[f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])],  
+    mode='regression',
+    discretize_continuous=False
+)
+
+selected_ids = generate_lime_explanations(
+    model=model,
+    X_train=X_train,
+    X_test=X_test,
+    feature_names=feature_names,
+    ml_type="CNN",
+    lime_predict_fn=lime_predict
+)
+
+for feature in feature_names:
+    print(f"\n📊 Plotting ICE for feature: {feature}")
+    save_combined_pdp_ice_all_timesteps(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature=feature, Control_Var=Control_Var)
 
 
 """
@@ -200,53 +229,9 @@ save_pdp_plots_to_pdf(model=model,ML_DATA=ML_DATA,feature_names=feature_names,fe
 
 plot_pdp_keras_model(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature='GHI[kW1m2]')
 """
-# Initialize LIME Explainer
-explainer = LimeTabularExplainer(
-    training_data=X_train.reshape(X_train_re.shape[0], -1),  # Flatten only for LIME explainer
-    feature_names=[f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])],  
-    mode='regression',
-    discretize_continuous=False
-)
 
-# Setzen Sie den Seed für reproduzierbare Ergebnisse
-np.random.seed(42)
 
-# Annahme: X_train, X_test_re und feature_names sind bereits definiert.
-# X_train_flat ist die geflattete Version von X_train für LIME.
-X_train_flat = X_train.reshape(X_train.shape[0], -1)
 
-# Erzeugen Sie die Feature-Namen für LIME (jeder Zeitschritt als eigene Spalte)
-lime_feature_names = [f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])]
-
-# Initialisieren Sie den LIME Explainer
-explainer = lime.lime_tabular.LimeTabularExplainer(
-    training_data=X_train_flat,
-    feature_names=lime_feature_names,
-    mode='regression',
-    discretize_continuous=False
-)
-
-# Wählen Sie fünf Testinstanzen aus – die Indizes werden in einer Liste gespeichert
-selected_indices = np.random.choice(range(X_test_re.shape[0]), 5, replace=False)
-print("Selected test instance indices:", selected_indices)
-
-# Erzeugen Sie eine PDF-Datei, in der alle LIME-Erklärungen gespeichert werden
-pdf_filename = f"{ml_type}_LIME_Explanations.pdf"
-with PdfPages(pdf_filename) as pdf:
-    for idx in selected_indices:
-        # Wandle die Testinstanz in ein 1D-Array (gefaltet) um, wie LIME es benötigt
-        test_instance = X_test_re[idx].reshape(1, -1)
-        # Definieren Sie hier Ihre predict-Funktion (z.B. mit partial), die LIME verwenden soll
-        predict_fn = partial(lime_predict, X_train=X_train, model=model)
-        explanation = explainer.explain_instance(test_instance[0], predict_fn)
-        # Erzeugen Sie die matplotlib-Figur aus der LIME-Erklärung
-        fig = explanation.as_pyplot_figure()
-        # Setzen Sie einen Supertitle, der den Index der Instanz kennzeichnet
-        fig.suptitle(f"{ml_type} LIME Explanation for Test Instance {idx}", fontsize=14)
-        pdf.savefig(fig)
-        plt.close(fig)
-
-print(f"LIME explanations saved in '{pdf_filename}'")
 #if Control_Var['IntrinsicFeature'] in feature_names:
  #   feature_names.remove(Control_Var['IntrinsicFeature'])
  #Step 4: Debugging Outputs

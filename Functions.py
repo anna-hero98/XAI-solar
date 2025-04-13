@@ -845,8 +845,8 @@ def PrepareMLmodel(control, ml_data):
             plt.ylabel( "Loss" )
             plt.xlabel( "Epoch" )
             plt.legend([ "Train" , "Validation"], loc= "upper right" )
-            plt.savefig('Training_Evaluation_' + control['MLtype'], dpi=500)
-            plt.show() 
+            model_folder = f"./{control['MLtype']}"
+            plt.savefig(model_folder+'/Training_Evaluation_' + control['MLtype'], dpi=500)
 
         if control['trainVSimport'] and control['saveMLmodel']:
             if control['MLtype'] in ['RF', "SVM"]:
@@ -1246,7 +1246,7 @@ def post_process(control, RESULTS):
               +" MSE = "+ str(round(mse.mean().iloc[0], 3)))
     plt.legend(rmse.columns)
     
-    filename = "RMSE_" + control["MLtype"]
+    filename = control["MLtype"]+"/"+"RMSE_" + control["MLtype"]
     print("    -Saving RMSE plot as: ", filename)
     plt.savefig(filename, dpi=500)
     print("...Done")
