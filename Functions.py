@@ -18,7 +18,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 import datetime
-
+import os
 import joblib
 
 from sklearn.model_selection import train_test_split
@@ -29,10 +29,9 @@ from sklearn.svm import SVR
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
+from keras.layers import LSTM as KerasLSTM, Dense, Masking
+
 from keras.models import Sequential
-from keras.layers import LSTM
-from keras.layers import Dense
-from keras.layers import Masking
 from keras.layers import Flatten
 from keras.layers import Conv1D
 from keras.layers import MaxPooling1D
@@ -115,7 +114,7 @@ def import_SOLETE_data(Control_Var, PVinfo, WTinfo):
             if col not in Control_Var['PossibleFeatures']: 
                 df = df.drop(col, axis=1)
                 print("Dropped col: ", col)           
-                print("after drop" + df.head)
+                #print("after drop" + df.head)
 
         print("\n")
         
@@ -836,16 +835,18 @@ def PrepareMLmodel(control, ml_data):
                 ML, ANN_training = train_CNN_LSTM(ml_data, control)
             print("...Done")
             
+            mltype = control['MLtype']
             #Plot the train vs validation loss and save the Figure
             fig = plt.figure()
             plt.plot(ANN_training.history[ "loss" ])
             plt.plot(ANN_training.history[ "val_loss" ])
             plt.grid()
-            plt.title("Model Trainings- vs Validierungsverlust")
+            plt.title(f"Model Trainings- vs. Validierungsverlust ({mltype})")
             plt.ylabel( "Loss" )
             plt.xlabel( "Epoch" )
             plt.legend([ "Train" , "Validation"], loc= "upper right" )
             model_folder = f"./{control['MLtype']}"
+            os.makedirs(model_folder, exist_ok=True)
             plt.savefig(model_folder+'/Training_Evaluation_' + control['MLtype'], dpi=500)
 
         if control['trainVSimport'] and control['saveMLmodel']:
@@ -916,11 +917,11 @@ def train_LSTM(data, control):
     #features.remove(control["IntrinsicFeature"])
     print("Shape von data['X_TRAIN']:", data['X_TRAIN'].shape)
     print("Gesamtzahl der Elemente:", data['X_TRAIN'].size)
-    print("Erwartete Anzahl an Elementen:", 7660 * 6 * 17)
+    print("Erwartete Anzahl an Elementen:", 7660 * 6 * 18)
 
     print("Shape von data['X_VAL'] VOR reshape:", data['X_VAL'].shape)
     print("Gesamtzahl der Elemente:", data['X_VAL'].size)
-    print("Erwartete Anzahl an Elementen:", 2189 * 6 * 17)
+    print("Erwartete Anzahl an Elementen:", 2189 * 6 * 18)
 
     train_data = data['X_TRAIN'].reshape(data['X_TRAIN'].shape[0], pre+1, len(features))
     validation_data = data['X_VAL'].reshape(data['X_VAL'].shape[0], pre+1, len(features))
@@ -931,22 +932,28 @@ def train_LSTM(data, control):
     ##### Designing Neuronal Network #######
     ML = Sequential() #initialize
     ML.add(Masking(mask_value=999, input_shape=(pre+1, len(features)))) #add the mask so 999 = nan and are not taken into account
-    if control['LSTM']['Dense'][0] > 0: #add a dense if the number of neurons is higher than 0
-        ML.add(Dense(control['LSTM']['Dense'][0]))
+    print("Typ von control['LSTM']:", type(control['LSTM']))
+    assert isinstance(control['LSTM'], dict), \
+       "control['LSTM'] muss ein Dictionary sein (Hyper­parameter)"
+    lstm_cfg = control['LSTM']             # jetzt garantiert ein Dictionary
+    if lstm_cfg['Dense'][0] > 0:
+        ML.add(Dense(lstm_cfg['Dense'][0]))
     if len(control["LSTM"]["Neurons"]) > 1: #if there is another LSTM coming afterwards we need the true
         return_seq = True
     else: #if a dense comes afterwards we need the false
         return_seq = False
-    ML.add(LSTM(control["LSTM"]["Neurons"][0], input_shape=(train_data.shape[1], train_data.shape[2]),
-                activation = control["LSTM"]["ActFun"],
-                bias_initializer = "zeros", kernel_initializer = "random_uniform",
-                return_sequences=return_seq)) #LSTM layer
+        ML.add(KerasLSTM(
+            lstm_cfg['Neurons'][0],
+            input_shape=(train_data.shape[1], train_data.shape[2]),
+            activation=lstm_cfg['ActFun'],
+            return_sequences=(len(lstm_cfg['Neurons']) > 1)
+)) #LSTM layer
 
     for index in range(1,len(control["LSTM"]["Neurons"])): #add the missing LSTM layers and a Dense after the last one
         if index != len(control["LSTM"]["Neurons"])-1:
-            ML.add(LSTM(control["LSTM"]["Neurons"][index], activation = control["LSTM"]["ActFun"], return_sequences=True)) #LSTM layers
+            ML.add(KerasLSTM(control["LSTM"]["Neurons"][index], activation = control["LSTM"]["ActFun"], return_sequences=True)) #LSTM layers
         else:
-            ML.add(LSTM(control["LSTM"]["Neurons"][index], activation = control["LSTM"]["ActFun"], return_sequences=False)) #LSTM layers
+            ML.add(KerasLSTM(control["LSTM"]["Neurons"][index], activation = control["LSTM"]["ActFun"], return_sequences=False)) #LSTM layers
             if control['LSTM']['Dense'][1] > 0: #we only add the dense one if the number of neurons is higher than 0
                 ML.add(Dense(control['LSTM']['Dense'][1], activation = 'relu'))
     ML.add(Dense(hor)) #this is the output layer
@@ -1079,11 +1086,11 @@ def train_CNN_LSTM(data, control):
                 ML.add(Dense(control['CNN_LSTM']['Dense'][1], activation = 'relu'))
     
     ML.add(Masking(mask_value=999, input_shape=(pre+1, len(features)))) #add the mask so 999 = nan and are not taken into account
-    ML.add(LSTM(control["CNN_LSTM"]["Neurons"][0], input_shape=(train_data.shape[1], train_data.shape[2]),
+    ML.add(KerasLSTM(control["CNN_LSTM"]["Neurons"][0], input_shape=(train_data.shape[1], train_data.shape[2]),
                 activation = control["CNN_LSTM"]["LSTMActFun"],
                 bias_initializer = "zeros", kernel_initializer = "random_uniform",
                 return_sequences=True)) #LSTM layer
-    ML.add(LSTM(control["CNN_LSTM"]["Neurons"][1], activation = control["CNN_LSTM"]["LSTMActFun"], return_sequences=False)) #LSTM layers
+    ML.add(KerasLSTM(control["CNN_LSTM"]["Neurons"][1], activation = control["CNN_LSTM"]["LSTMActFun"], return_sequences=False)) #LSTM layers
     
     ML.add(Dense(hor, activation = 'sigmoid')) #control["CNN_LSTM"]["LSTMActFun"]))
     ML.compile(loss=control["CNN_LSTM"]["LossFun"], optimizer=control["CNN_LSTM"]["Optimizer"]) #, metrics=['mse', 'mae', 'mape', 'cosine']
@@ -1242,8 +1249,9 @@ def post_process(control, RESULTS):
     plt.ylim(ymin, ymax) 
     plt.ylabel( "RMSE" )
     plt.xlabel( "Time Horizon" )
-    plt.title("RMSE=" + str(round(rmse.mean().iloc[0], 3)) + " MAE = " + str(round(mae.mean().iloc[0], 3))\
-              +" MSE = "+ str(round(mse.mean().iloc[0], 3)))
+    MLtype = control["MLtype"]
+    plt.title(f"{MLtype}: RMSE = {round(rmse.mean().iloc[0], 3)}  MAE = {round(mae.mean().iloc[0], 3)}  MSE = {round(mse.mean().iloc[0], 3)}")
+
     plt.legend(rmse.columns)
     
     filename = control["MLtype"]+"/"+"RMSE_" + control["MLtype"]

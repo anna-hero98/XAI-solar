@@ -298,6 +298,8 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
     import shap
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
+    
+    FIXED_XLIM = (-0.5, 0.5)  # Set fixed x-axis limits for all plots
 
     # Dummy Outline-Klasse, die set_visible unterstützt
     class DummyOutline:
@@ -400,22 +402,27 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
 
     # --- Aggregated SHAP Summary Plot ---
     fig = plt.figure(figsize=(8,6))
+                # Titel als "Supertitle" hinzufügen.
+    ml_type = Control_Var['MLtype']
+    fig.suptitle(f"SHAP für das {ml_type}-Modell",fontsize=14)
+
+            # Mit subplots_adjust oder tight_layout genügend Platz für den Titel schaffen.
+            # Variante A:
+    plt.subplots_adjust(top=0.85)  # je nach Bedarf anpassen (0.8, 0.9 etc.)
     plt.subplots_adjust(right=0.8)  # Reserve space for the Colorbar
     shap.summary_plot(
         shap_values=shap_2D,
         features=X_test_agg,
         feature_names=feature_names,
         plot_type='dot',
-        show=False
+        show=False,
+        sort=False,
+        xlim=FIXED_XLIM
     )
 
 
     model_folder = f"./{Control_Var['MLtype']}"
     os.makedirs(model_folder, exist_ok=True)
-
-  
-
-
 
     agg_filename = f"{Control_Var['MLtype']}_Shap_Aggregated.png"
     agg_filepath = os.path.join(model_folder, agg_filename)
@@ -425,7 +432,8 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
 
     # --- Per-Timestep SHAP Summary Plots in einem PDF ---
     per_ts_filename = f"{Control_Var['MLtype']}_Shap_PerTimestep.pdf"
-    with PdfPages(per_ts_filename) as pdf:
+    per_ts_filepath  = os.path.join(model_folder, per_ts_filename) 
+    with PdfPages(per_ts_filepath) as pdf:
         num_timesteps = shap_array.shape[1]  # Annahme: shap_array hat Form (samples, time_steps, features)
         for t in range(num_timesteps):
             fig = plt.figure(figsize=(8,6))
@@ -438,21 +446,22 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
                 features=X_test_3D[:, t, :],
                 feature_names=feature_names,
                 plot_type='dot',
-                show=False
+                show=False,
+                sort=False,
+                xlim=FIXED_XLIM
             )
                             # Standard-Titel von shap.summary_plot entfernen (falls vorhanden).
             plt.title("")  
 
             # Titel als "Supertitle" hinzufügen.
-            fig.suptitle(f"SHAP Summary at Time Step {t}", fontsize=14)
+            fig.suptitle(f"SHAP Diagramm zum Zeitpunkt t = {t} für das {ml_type}-Modell", fontsize=14)
 
             # Mit subplots_adjust oder tight_layout genügend Platz für den Titel schaffen.
             # Variante A:
-            plt.subplots_adjust(top=0.85)  # je nach Bedarf anpassen (0.8, 0.9 etc.)
+            plt.subplots_adjust(top=0.95)  # je nach Bedarf anpassen (0.8, 0.9 etc.)
             model_folder = f"./{Control_Var['MLtype']}"
             agg_filepath = os.path.join(model_folder, per_ts_filename)
-            fig.savefig(agg_filepath, bbox_inches='tight', dpi=300)
-            pdf.savefig(fig)
+            pdf.savefig(fig, bbox_inches='tight', dpi=300)            # CHANGED
             plt.close(fig)
             plt.colorbar = original_cb
     print(f"Per-timestep SHAP summary plots saved as: {per_ts_filename}")
@@ -463,169 +472,95 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
     return shap_values
 
 
-
-
-def get_explanations_2DP_odd(model, ML_DATA, X_test_3D, feature_names, background_samples=100, Control_Var=None, idx_remove=None):
+def ffc_explanation(
+        model,
+        X,
+        feature_names,
+        ml_type: str,
+        n_samples: int = 30,
+        random_state: int = 42,
+        make_plots: bool = True):
     """
-    Obtain SHAP explanations for Keras (CNN, LSTM) or scikit-learn (RF, SVM) models.
-    
-    For CNN/LSTM models, this function:
-      - Computes SHAP values using the GradientExplainer.
-      - Aggregates the SHAP values over the time dimension to yield a 2D array (samples x features)
-        and creates a summary plot (aggregated over time).
-      - Additionally, it generates separate SHAP summary plots per time step and saves these plots
-        as a multi-page PDF.
-    
-    Parameters:
-    -----------
-    model : trained ML model
-        Keras (CNN/LSTM) or scikit-learn (RF, SVM) model.
-    X_test_3D : np.array
-        Test dataset (3D for CNN/LSTM, shape: (samples, time_steps, features)).
-    feature_names : list of str
-        Feature names (length must equal the number of features).
-    background_samples : int, optional
-        Number of samples for SHAP background data (default: 100).
-    Control_Var : dict, required
-        Dictionary containing 'MLtype' (and possibly 'PossibleFeatures') among others.
-    idx_remove : int or str, optional
-        Index (or name, which is then converted to index) of a feature to remove before SHAP analysis.
-    
-    Returns:
-    --------
-    shap_values : list or np.array
-        The raw SHAP values computed by the explainer.
+    Liefert lokale FFC‑Relevanzen S und erzeugt (optional) globale Plots.
+
+    Zusätzliche Parameter
+    ---------------------
+    feature_names : list[str]
+        Namen der Eingangssignale (Länge = n_features).
+    ml_type : str
+        Modelltyp; wird als Ordner‑/Dateipräfix verwendet.
+    make_plots : bool, default=True
+        Erzeugt PNG‑Plots der globalen Kennzahlen.
     """
+    rng = np.random.default_rng(random_state)
+    n, T, F = X.shape
+    S = np.zeros((n, T, F), dtype=float)
+
+    # ---------- Lokale Relevanzen berechnen (identisch wie zuvor) ----------
+    for i in range(n):
+        x_orig = X[i].copy()
+        pred_orig = model.predict(x_orig[None, ...])
+        y_orig    = float(np.asarray(pred_orig).mean())        
+        for t in range(T):
+            for f in range(F):
+                idx_pool = rng.choice(np.delete(np.arange(n), i), size=n_samples)
+                repl_vals = X[idx_pool, t, f]
+                delta = 0.0
+                for val in repl_vals:
+                    x_cf = x_orig.copy()
+                    x_cf[t, f] = val
+                    pred_cf = model.predict(x_cf[None, ...])
+                    y_cf    = float(np.asarray(pred_cf).mean())       # ⇒ Skalar
+                    delta  += abs(y_cf - y_orig)
+                    S[i, t, f] = delta / n_samples
+
+    # ---------- Globale Kennzahlen ----------
+    feature_global = S.mean(axis=(0, 1))   # (F,)
+    time_global    = S.mean(axis=(0, 2))   # (T,)
+    instance_sum   = S.sum(axis=(1, 2))    # (n,)
+
+    # ---------- Plots ----------
+    if make_plots:
+        out_dir = f"./{ml_type}"
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 1) Feature‑Global – Balkendiagramm
+        plt.figure(figsize=(8, 4))
+        plt.bar(range(F), feature_global)
+        plt.xticks(range(F), feature_names, rotation=90)
+        plt.ylabel("Mittlere Relevanz")
+        plt.title(f"{ml_type} – FFC Feature Global")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"{ml_type}_FFC_FeatureGlobal.png"),
+                    dpi=300, bbox_inches="tight")
+        plt.close()
+
+        # 2) Time‑Global – Liniendiagramm
+        plt.figure(figsize=(6, 4))
+        plt.plot(range(T), time_global, marker="o")
+        plt.xlabel("Zeitschritt")
+        plt.ylabel("Mittlere Relevanz")
+        plt.title(f"{ml_type} – FFC Time Global")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"{ml_type}_FFC_TimeGlobal.png"),
+                    dpi=300, bbox_inches="tight")
+        plt.close()
+
+        # 3) Instance‑Sum – Boxplot
+        plt.figure(figsize=(4, 4))
+        plt.boxplot(instance_sum, vert=True, patch_artist=True)
+        plt.ylabel("Σ Relevanz pro Instanz")
+        plt.title(f"{ml_type} – FFC Instance Sum")
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, f"{ml_type}_FFC_InstanceSum.png"),
+                    dpi=300, bbox_inches="tight")
+        plt.close()
+
+    return S, {"feature_global": feature_global,
+               "time_global": time_global,
+               "instance_sum": instance_sum}
 
 
-    if Control_Var is None:
-        raise ValueError("Control_Var dictionary is required to identify the model type!")
-    
-    # Falls idx_remove als String übergeben wurde, konvertieren Sie diesen in einen Integer-Index.
-    if idx_remove is not None and isinstance(idx_remove, str):
-        if idx_remove in Control_Var.get('PossibleFeatures', []):
-            idx_remove = Control_Var['PossibleFeatures'].index(idx_remove)
-        else:
-            idx_remove = None
-
-    if Control_Var['MLtype'] in ['CNN', 'LSTM', 'CNN_LSTM']:
-        print("Using GradientExplainer for CNN/LSTM models...")
-
-        # 1️⃣ Select Background Data
-        background_samples = min(background_samples, X_test_3D.shape[0])
-        background_indices = random.sample(range(X_test_3D.shape[0]), background_samples)
-        background_data = X_test_3D[background_indices]
-
-        print("Feature Names from X_TRAIN:", ML_DATA["xcols"])
-        print("Feature Names Used for SHAP:", feature_names)
-        print("X_TRAIN.shape:", ML_DATA["X_TRAIN"].shape)
-
-        # 2️⃣ Initialize SHAP GradientExplainer
-        explainer = shap.GradientExplainer(model, background_data)
-
-        # 3️⃣ Compute SHAP Values
-        shap_values = explainer.shap_values(X_test_3D)
-        shap_array = shap_values[0] if isinstance(shap_values, list) else shap_values
-        print("Raw SHAP shape:", shap_array.shape)
-
-        # 4️⃣ Optional: Remove a feature
-        if idx_remove is not None:
-            print(f"Removing feature at index {idx_remove}...")
-            shap_array = np.delete(shap_array, idx_remove, axis=2)
-            X_test_3D = np.delete(X_test_3D, idx_remove, axis=2)
-            # Optional: Auch feature_names anpassen, falls benötigt.
-            feature_names.pop(idx_remove)
-
-        # 5️⃣ Aggregation: Für die globale Übersicht über alle Zeitpunkte
-        if shap_array.ndim == 3:
-            shap_2D = shap_array.mean(axis=1)  # Aggregation über die Zeitachse
-            print("Detected 3D SHAP -> Aggregated via axis=1. Final shape:", shap_2D.shape)
-        else:
-            raise ValueError(f"Unexpected SHAP array dimension: {shap_array.shape}")
-
-        # 6️⃣ Aggregate X_test similarly to match SHAP aggregation
-        X_test_agg = X_test_3D.mean(axis=1)
-
-    elif Control_Var['MLtype'] == 'RF':
-        print("Using TreeExplainer for Random Forest...")
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_test_3D)
-        if isinstance(shap_values, list):
-            shap_2D = np.mean(np.array(shap_values), axis=0)
-        else:
-            shap_2D = shap_values
-        X_test_agg = X_test_3D  # No time aggregation needed for RF
-
-    elif Control_Var['MLtype'] == 'SVM':
-        print("Using KernelExplainer for SVM (may be slow)...")
-        background_samples = min(background_samples, X_test_3D.shape[0])
-        background_indices = random.sample(range(X_test_3D.shape[0]), background_samples)
-        background_data = X_test_3D[background_indices]
-        explainer = shap.KernelExplainer(model.predict, background_data)
-        shap_values = explainer.shap_values(X_test_3D[:50])  # Limit samples for speed
-        shap_2D = shap_values
-        X_test_agg = X_test_3D[:50]
-    else:
-        raise ValueError("Unsupported ML model. Supported: CNN, LSTM, RF, SVM.")
-
-    # Final shape check
-    if shap_2D.shape[0] != X_test_agg.shape[0]:
-        raise ValueError(f"Shape mismatch: SHAP ({shap_2D.shape[0]}) != X_test ({X_test_agg.shape[0]})!")
-    if shap_2D.shape[1] != len(feature_names):
-        raise ValueError(f"Shape mismatch: SHAP ({shap_2D.shape[1]}) != Features ({len(feature_names)})!")
-    for i in range(X_test_agg.shape[1]):
-        col = X_test_agg[:, i]
-        if np.allclose(col, col[0]):
-            print(f"Feature {i} ({feature_names[i]}) ist konstant.")
-    indices_to_remove = []
-    for i in range(X_test_agg.shape[1]):
-        col = X_test_agg[:, i]
-        if np.allclose(col, col[0]):
-            indices_to_remove.append(i)
-
-    if indices_to_remove:
-        print("Removing constant features at indices:", indices_to_remove)
-        # Entferne die entsprechenden Spalten aus feature_names, X_test_agg und shap_2D
-        for idx in sorted(indices_to_remove, reverse=True):
-            feature_names.pop(idx)
-            X_test_agg = np.delete(X_test_agg, idx, axis=1)
-            shap_2D = np.delete(shap_2D, idx, axis=1)
-    # 7️⃣ Create aggregated SHAP summary plot (global over time)
-        # 7️⃣ Create aggregated SHAP summary plot (global over time)
-    # Aggregierter Summary-Plot (global über die Zeit)
-# Aggregierter Summary-Plot (global über die Zeit)
-    fig, ax = plt.subplots(figsize=(8,6))
-# Erzeuge einen Dummy-Scatter, um ein mappable zu erzeugen:
-    dummy = ax.scatter([], [], c=[], cmap='viridis')
-    plt.subplots_adjust(right=0.8)  # Platz für den Colorbar reservieren
-    shap.summary_plot(shap_values=shap_2D, features=X_test_agg, feature_names=feature_names, 
-                        plot_type='dot', show=False)
-    agg_filename = f"{Control_Var['MLtype']}_Shap_Aggregated.png"
-    fig.savefig(agg_filename, bbox_inches='tight', dpi=300)
-    plt.close(fig)
-    print(f"Aggregated SHAP summary plot saved as: {agg_filename}")
-
-
-
-    # 8️⃣ Create per-timestep SHAP summary plots and save as multi-page PDF
-    per_ts_filename = f"{Control_Var['MLtype']}_Shap_PerTimestep.pdf"
-    from matplotlib.backends.backend_pdf import PdfPages
-    with PdfPages(per_ts_filename) as pdf:
-        num_timesteps = shap_array.shape[1]  # Annahme: shap_array hat Form (samples, time_steps, features)
-        for t in range(num_timesteps):
-            fig, ax = plt.subplots(figsize=(8,6))
-            # Dummy-Scatter erzeugen, um ein mappable zu liefern
-            dummy = ax.scatter([], [], c=[], cmap='viridis')
-            plt.subplots_adjust(right=0.8)
-            # SHAP-Werte und entsprechende Feature-Werte für den Zeitschritt t
-            shap_t = shap_array[:, t, :]
-            X_t = X_test_3D[:, t, :]
-            shap.summary_plot(shap_values=shap_t, features=X_t, feature_names=feature_names, 
-                                plot_type='dot', show=False)
-            plt.title(f"SHAP Summary at Time Step {t}")
-            pdf.savefig(fig)
-            plt.close(fig)
-    print(f"Per-timestep SHAP summary plots saved as: {per_ts_filename}")
 
 
 """
@@ -947,7 +882,7 @@ def plot_pdp_keras_model(model, ML_DATA, feature_names, feature, value_range=Non
 
     for val in value_range:
         X_temp = X_test.copy()
-        X_temp[..., feature_index] = val  # ersetze überall durch denselben Wert
+        X_temp[..., feature_index] = val  
         preds = model.predict(X_temp)
         mean_pred = preds.mean()
         mean_predictions.append(mean_pred)
@@ -1169,7 +1104,7 @@ def save_combined_pdp_ice_all_timesteps(
             pdp = ice_matrix.mean(axis=0)
             plt.plot(value_range, pdp, color='black', linewidth=2.5, label='PDP (mean)')
 
-            plt.title(f"PDP + ICE für '{feature}' zum Timestep t={timestep}")
+            plt.title(f"PDP + ICE für '{feature}' zum Zeitpunkt t={timestep}")
             plt.xlabel(f"{feature} (t = {timestep})")
             plt.ylabel("Modelvorhersage Solarenergie (kW)")
             plt.grid(True)
@@ -1280,3 +1215,498 @@ def plot_counterfactual_comparison(original_preds, counterfactual_preds, modifie
     #plt.savefig(file_name)
     plt.close()
     print(f"Counterfactual comparision.")
+
+
+def generate_counterfactuals_targeted(ML_DATA, Control_Var, feature_changes, sample_indices):
+    """
+    Erzeugt Counterfactual-Daten, indem ausgewählte Merkmale (Features) nur
+    bei bestimmten Samples im Test- bzw. Validierungsdatensatz manipuliert werden.
+    
+    Parameters
+    ----------
+    ML_DATA : dict
+        Ihr bereits vorbereitetes Datenwörterbuch mit Schlüsseln wie 'X_TEST', 'X_VAL' usw.
+        Enthält die (samples, PRE+1, features)-Arrays für LSTM/CNN-Modelle bzw.
+        (samples, features) für RF/SVM (angepasst an Ihr Vorgehen).
+    Control_Var : dict
+        Enthält Informationen wie 'PossibleFeatures' etc.
+    feature_changes : dict
+        Key: Name des Features (z. B. 'TEMPERATURE[degC]', 'GHI[kW1m2]').
+        Value: Änderung, entweder als Multiplikationsfaktor (z. B. 0.8 für -20%)
+               oder als additiver Wert (z. B. +2.0 für +2 Grad).
+        Beispiele:
+            {'TEMPERATURE[degC]': +5.0, 'GHI[kW1m2]': 0.5}
+    sample_indices : list
+        Liste der Sample-Indizes, an denen wir die Features manipulieren wollen.
+        (Z. B. [10, 15, 100, 101])
+
+    Returns
+    -------
+    new_ML_DATA : dict
+        Kopie von ML_DATA, in dem lediglich an den angegebenen sample_indices
+        die gewünschten feature_changes ausgeführt wurden.
+    
+    Hinweise
+    --------
+    - Achten Sie darauf, dass diese Funktion nur dann sauber läuft, wenn das ML_DATA-Format
+      dem in Ihrem Skript entspricht. Für LSTM/CNN-Batches ist meist die Form
+      (N, PRE+1, F) nötig, für RF/SVM ggf. (N, F).
+    - Passen Sie ggf. den Zugriff auf die letzte Achse an, falls das Feature-Array
+      anders geordnet ist.
+    """
+    # Kopie anlegen, damit das Original nicht verändert wird
+    new_ML_DATA = {}
+    
+    # Liste aller Feature-Namen
+    feature_list = feature_names
+    
+    # Wir greifen nur auf Eingabe-Arrays (X_...) zu,
+    # da Ausgänge (Y_...) in der Regel unverändert bleiben
+    for key, value in ML_DATA.items():
+        if key.startswith('X_'):
+            arr = value.copy()  # sichert, dass das Original unberührt bleibt
+            
+            # Wir prüfen die Dimension. Bei LSTM/CNN:
+            # arr.shape == (samples, PRE+1, #features)
+            # Bei RF/SVM: arr.shape == (samples, #features)
+            # Die Logik unten geht davon aus, dass Achse=-1 die Feature-Achse ist:
+            #   arr[..., feat_idx]
+            # Wenn Ihr Array anders strukturiert ist, bitte entsprechend anpassen!
+            
+            for idx in sample_indices:
+                # Safety-Check: Index im zulässigen Bereich?
+                if 0 <= idx < arr.shape[0]:
+                    for feat_name, change_val in feature_changes.items():
+                        if feat_name in feature_list:
+                            feat_idx = feature_list.index(feat_name)
+                            
+                            # Änderung festlegen
+                            # 1) Multiplikationsfaktor, wenn 0 < change_val < ~2
+                            if isinstance(change_val, (float, int)) and 0 < change_val < 2:
+                                arr[idx, :, feat_idx] *= change_val
+                            else:
+                                # 2) Sonst addieren wir den Wert
+                                arr[idx, :, feat_idx] += change_val
+                else:
+                    # Optional: Warnung ausgeben, wenn Index zu groß/negativ ist
+                    print(f"Achtung: sample_indices={idx} liegt außerhalb des zulässigen Bereichs.")
+            
+            new_ML_DATA[key] = arr
+        else:
+            # Für alle nicht-X_-Schlüssel (z. B. Y_TEST) nur kopieren, unmodifiziert
+            if isinstance(value, np.ndarray):
+                new_ML_DATA[key] = value.copy()
+            else:
+                new_ML_DATA[key] = value
+    return new_ML_DATA
+
+
+
+def analyze_counterfactuals(
+    original_preds, 
+    cf_preds, 
+    manipulated_idx=None, 
+    observed=None, 
+    focus_range=None,
+    title="Vergleich Original vs. Counterfactual Prediction"
+):
+    """
+    Stellt Original- und Counterfactual-Prognosen dar, hebt manipulierte Indizes hervor
+    und erlaubt die Gegenüberstellung mit echten Messwerten (observed).
+    
+    Parameter
+    ---------
+    original_preds : np.ndarray
+        Array mit den Vorhersagen des Modells ohne Manipulation
+        (z.B. shape (N,) oder (N,H). Falls (N,H), wird mittlerer Wert gebildet).
+    cf_preds : np.ndarray
+        Array mit den Counterfactual-Vorhersagen
+        (gleiche Dimensionierung wie original_preds).
+    manipulated_idx : list or np.ndarray, optional
+        Indizes, an denen wirklich manipuliert wurde. Diese Punkte werden hervorgehoben.
+        Standard: None -> kein Hervorheben.
+    observed : np.ndarray, optional
+        Echte Messwerte (falls verfügbar) zum Vergleich. Gleiche Dimension wie preds.
+        Standard: None -> keine Observed-Linie.
+    focus_range : tuple, optional
+        (start, end) zur Beschränkung des Plots auf einen Teil des Datensatzes.
+        Beispiel: (0, 50) -> Zeige nur Samples 0 bis 50.
+        Standard: None -> zeige gesamten Bereich.
+    title : str, optional
+        Plot-Titel. Standard: "Vergleich Original vs. Counterfactual Prediction".
+    
+    Hinweise
+    --------
+    - Wenn original_preds und cf_preds mehrdimensional sind (z.B. (N,H)),
+      wird zur Darstellung jeweils der Mittelwert über Achse 1 gebildet.
+    - Sie können die "manipulated_idx" explizit angeben, damit die Abweichung
+      nur dort sichtbar markiert wird.
+    - Mit "observed" können Sie die realen Messwerte plotten, um zu sehen,
+      wie groß die Abweichung zum Ground Truth ist.
+    - Mit "focus_range" beschränken Sie den Plot auf einen Teilbereich.
+    """
+    
+    # Sicherstellen, dass beide Arrays gleichartig sind
+    if original_preds.ndim > 1:
+        # z.B. (samples, horizon) -> Mittelwert über horizon bilden
+        orig_mean = original_preds.mean(axis=1)
+    else:
+        orig_mean = original_preds
+        
+    if cf_preds.ndim > 1:
+        cf_mean = cf_preds.mean(axis=1)
+    else:
+        cf_mean = cf_preds
+    
+    # Echte Messwerte ebenfalls mitteln, falls nötig
+    if observed is not None:
+        if observed.ndim > 1:
+            obs_mean = observed.mean(axis=1)
+        else:
+            obs_mean = observed
+    else:
+        obs_mean = None
+    
+    # Fokus auf Teilbereich
+    n_samples = len(orig_mean)
+    if focus_range is not None:
+        start, end = focus_range
+        start = max(0, start)
+        end = min(n_samples, end)
+    else:
+        start, end = 0, n_samples
+    
+    # Plot: Original vs. Counterfactual
+    plt.figure(figsize=(10, 5))
+    plt.title(title)
+    
+    x_axis = np.arange(n_samples)
+    
+    # Geschnittener Bereich
+    x_plot = x_axis[start:end]
+    orig_plot = orig_mean[start:end]
+    cf_plot = cf_mean[start:end]
+    
+    plt.plot(x_plot, orig_plot, label='Originalvorhersage', alpha=0.7)
+    plt.plot(x_plot, cf_plot, label='Counterfactual (manipuliert)', alpha=0.7)
+    
+    # Markierung der manipulierten Punkte
+    if manipulated_idx is not None:
+        # Nur Punkte markieren, die im focus_range liegen
+        manipulated_idx_in_range = [idx for idx in manipulated_idx if start <= idx < end]
+        
+        if len(manipulated_idx_in_range) > 0:
+            # Original
+            plt.scatter(
+                manipulated_idx_in_range,
+                orig_mean[manipulated_idx_in_range],
+                color='red',
+                s=50,
+                zorder=5,
+                label='Manipulierte (Original)'
+            )
+            # Counterfactual
+            plt.scatter(
+                manipulated_idx_in_range,
+                cf_mean[manipulated_idx_in_range],
+                color='green',
+                s=50,
+                zorder=6,
+                label='Manipulierte (CF)'
+            )
+    
+    # Observed (falls vorhanden)
+    if obs_mean is not None:
+        obs_plot = obs_mean[start:end]
+        plt.plot(x_plot, obs_plot, '--', color='black', label='Observed')
+    
+    plt.xlabel('Test-Sample')
+    plt.ylabel('P_Solar Prognose')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    
+    # Zweiter Plot: Differenz
+    delta = cf_mean - orig_mean
+    delta_plot = delta[start:end]
+    
+    plt.figure(figsize=(10, 3))
+    plt.title("Abweichung (CF - Original)")
+    plt.plot(x_plot, delta_plot, label='Delta (CF - Original)')
+    plt.axhline(y=0, color='k', linestyle='--')
+    if manipulated_idx is not None:
+        manipulated_idx_in_range = [idx for idx in manipulated_idx if start <= idx < end]
+        if len(manipulated_idx_in_range) > 0:
+            plt.scatter(manipulated_idx_in_range, delta[manipulated_idx_in_range],
+                        color='red', s=50, zorder=5, label='Manipulierte Delta')
+    plt.xlabel('Test-Sample')
+    plt.ylabel('Abweichung')
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+    
+    # Optionale Rückgabe: delta-Werte
+    return delta
+
+
+
+
+def custom_partial_dependence(
+    model,
+    X,
+    feature_indices,
+    grid_resolution=50,
+    sample_fraction=0.3,
+    agg_function='mean'
+):
+    """
+    Berechnet eine einfache Partielle Abhängigkeit (PDP) für beliebige Modelle,
+    indem ein oder mehrere Features systematisch von min -> max durchlaufen werden.
+    
+    Parameter
+    ---------
+    model : object
+        Ihr trainiertes Modell mit einer Methode predict(X_2D).
+    X : np.ndarray
+        Ausgangsdaten in 2D-Form [Samples, Features].
+        Für Keras/CNN müssen Sie vorher selbst reshape übernehmen.
+    feature_indices : list
+        Liste mit einem oder mehreren Feature-Indizes, z. B. [0] oder [0, 1].
+        - Geben Sie eine einzelne Zahl an, erhalten Sie eine 1D-PDP.
+        - Geben Sie zwei Zahlen als [0, 1] an, können Sie eine 2D-PDP (Interaktion) berechnen.
+    grid_resolution : int, optional
+        Wie viele Stützstellen werden pro Feature gebildet? Standard 50.
+    sample_fraction : float, optional
+        Anteil (0..1) der Datensätze, die Sie für die Berechnung verwenden.
+        Bei großen Daten kann man so beschleunigen.
+    agg_function : str, optional
+        'mean' oder 'median' – wie werden die Vorhersagen über die Proben gemittelt?
+
+    Returns
+    -------
+    dict
+        Enthält:
+         - 'values'   : Liste von Arrays/Koordinaten für die Feature-Grids
+         - 'pd_values': N-dimensionales Array mit den PDP-Werten
+                        1D-Fall -> shape (grid_resolution,)
+                        2D-Fall -> shape (grid_resolution, grid_resolution)
+         - 'features' : die Feature-Indizes
+         """
+
+    # 1) Subset der Daten
+    N = X.shape[0]
+    n_samples = int(N * sample_fraction)
+    if n_samples < 1:
+        n_samples = 1
+    idx = np.random.choice(np.arange(N), size=n_samples, replace=False)
+    X_sub = X[idx, :].copy()
+    
+    # Eruieren, ob 1D- oder 2D-PDP
+    if len(feature_indices) == 1:
+        # Ein einzelnes Feature
+        f_idx = feature_indices[0]
+        feat_min, feat_max = X_sub[:, f_idx].min(), X_sub[:, f_idx].max()
+        grid_vals = np.linspace(feat_min, feat_max, grid_resolution)
+
+        pd_vals = []
+        for val in grid_vals:
+            # Kopie anlegen
+            X_temp = X_sub.copy()
+            X_temp[:, f_idx] = val
+            preds = model.predict(X_temp)
+            
+            # Falls Ausgabe 2D, auf 1D reduzieren
+            if preds.ndim == 2 and preds.shape[1] == 1:
+                preds = preds.ravel()
+            elif preds.ndim == 2 and preds.shape[1] > 1:
+                # Multi-Output: Beispielhaft nur 0. Spalte
+                preds = preds[:, 0]
+            
+            if agg_function == 'mean':
+                pd_vals.append(preds.mean())
+            else:
+                pd_vals.append(np.median(preds))
+        
+        pd_vals = np.array(pd_vals)
+        return {
+            'values': [grid_vals],
+            'pd_values': pd_vals,
+            'features': feature_indices
+        }
+    
+    elif len(feature_indices) == 2:
+        # Zwei Features -> 2D-Gitter
+        f1, f2 = feature_indices
+        feat1_min, feat1_max = X_sub[:, f1].min(), X_sub[:, f1].max()
+        feat2_min, feat2_max = X_sub[:, f2].min(), X_sub[:, f2].max()
+
+        grid1 = np.linspace(feat1_min, feat1_max, grid_resolution)
+        grid2 = np.linspace(feat2_min, feat2_max, grid_resolution)
+
+        pd_vals_2d = np.zeros((grid_resolution, grid_resolution), dtype=float)
+        
+        for i, val1 in enumerate(grid1):
+            for j, val2 in enumerate(grid2):
+                X_temp = X_sub.copy()
+                X_temp[:, f1] = val1
+                X_temp[:, f2] = val2
+                preds = model.predict(X_temp)
+                
+                if preds.ndim == 2 and preds.shape[1] == 1:
+                    preds = preds.ravel()
+                elif preds.ndim == 2 and preds.shape[1] > 1:
+                    preds = preds[:, 0]
+                
+                if agg_function == 'mean':
+                    pd_vals_2d[i, j] = preds.mean()
+                else:
+                    pd_vals_2d[i, j] = np.median(preds)
+        
+        return {
+            'values': [grid1, grid2],
+            'pd_values': pd_vals_2d,
+            'features': feature_indices
+        }
+    else:
+        raise ValueError("custom_partial_dependence demo unterstützt derzeit nur 1 oder 2 Features.")
+
+
+
+def explain_model(Control_Var, model, X_test, feature_names, idx_remove=None, background_samples=100):
+    """
+    Explain ML models (CNN, LSTM, RF, SVM) using SHAP.
+    
+    - CNN, LSTM, CNN_LSTM => Uses SHAP GradientExplainer
+    - RF                  => Uses SHAP TreeExplainer
+    - SVM                 => Uses SHAP KernelExplainer (approximate, slower)
+
+    Parameters:
+    -----------
+    Control_Var : dict
+        Dictionary containing the ML model type ('MLtype')
+    model : trained ML model
+        Keras (CNN/LSTM), RandomForest, or SVM model
+    X_test : np.array
+        Test dataset (3D for CNN/LSTM, 2D for RF/SVM)
+    feature_names : list of str
+        Feature names
+    idx_remove : int, optional
+        Index of a feature to remove (default: None)
+    background_samples : int, optional
+        Number of samples for SHAP background data (default: 100)
+    """
+
+    if Control_Var['MLtype'] in ['CNN', 'LSTM', 'CNN_LSTM']:
+        print("Using GradientExplainer for CNN/LSTM...")
+
+        # 1️⃣ **Background Data Selection**
+        background_samples = min(background_samples, X_test.shape[0])
+        background_indices = random.sample(range(X_test.shape[0]), background_samples)
+        background_data = X_test[background_indices]
+
+        # 2️⃣ **Initialize SHAP GradientExplainer**
+        explainer = shap.GradientExplainer(model, background_data)
+        
+        # 3️⃣ **Compute SHAP Values**
+        shap_values = explainer.shap_values(X_test)
+        shap_array = shap_values[0] if isinstance(shap_values, list) else shap_values
+
+        print("Raw SHAP shape:", shap_array.shape)
+
+        # 4️⃣ **Feature Removal (Optional)**
+        if idx_remove is not None:
+            print(f"Removing feature at index {idx_remove}...")
+            shap_array = np.delete(shap_array, idx_remove, axis=2)
+            X_test = np.delete(X_test, idx_remove, axis=2)
+            #feature_names.pop(idx_remove) #adapt depending on model
+
+        # 5️⃣ **SHAP Aggregation**
+        if shap_array.ndim == 4:
+            shap_2D = shap_array.mean(axis=(1, 3))  # Average over PRE and H
+        elif shap_array.ndim == 3:
+            shap_2D = shap_array.mean(axis=1)  # Average over PRE
+        else:
+            raise ValueError(f"Unexpected SHAP array dimension: {shap_array.shape}")
+
+        print("Final SHAP shape:", shap_2D.shape)
+
+        # 6️⃣ **Aggregate X_test to match SHAP (over PRE)**
+        X_test_agg = X_test.mean(axis=1)
+
+    elif Control_Var['MLtype'] == 'RF':
+        print("Using TreeExplainer for Random Forest...")
+
+        # 1️⃣ **Initialize SHAP TreeExplainer**
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_test)
+
+        # 2️⃣ **Handle Multi-output**
+        if isinstance(shap_values, list):
+            shap_2D = np.mean(np.array(shap_values), axis=0)  # Average across outputs
+        else:
+            shap_2D = shap_values
+
+        X_test_agg = X_test  # RF does not need PRE aggregation
+
+    elif Control_Var['MLtype'] == 'SVM':
+        print("Using KernelExplainer for SVM (may be slow)...")
+
+        # 1️⃣ **Select a subset of data for KernelExplainer**
+        background_samples = min(background_samples, X_test.shape[0])
+        background_indices = random.sample(range(X_test.shape[0]), background_samples)
+        background_data = X_test[background_indices]
+
+        # 2️⃣ **Initialize SHAP KernelExplainer**
+        explainer = shap.KernelExplainer(model.predict, background_data)
+        shap_values = explainer.shap_values(X_test[:50])  # Limit samples for speed
+
+        shap_2D = shap_values  # KernelExplainer outputs (N, Features)
+        X_test_agg = X_test[:50]  # Reduce to match SHAP computation
+
+    else:
+        print("Unsupported ML model. Supported: CNN, LSTM, RF, SVM.")
+        return None
+
+    # 7️⃣ **Final Shape Check**
+    if shap_2D.shape[0] != X_test_agg.shape[0]:
+        raise ValueError(
+            f"Shape mismatch: SHAP ({shap_2D.shape[0]}) != X_test ({X_test_agg.shape[0]})!"
+        )
+    if shap_2D.shape[1] != len(feature_names):
+        raise ValueError(
+            f"Shape mismatch: SHAP ({shap_2D.shape[1]}) != Features ({len(feature_names)})!"
+        )
+
+    # 8️⃣ **SHAP Summary Plot**
+    shap.summary_plot(
+        shap_values=shap_2D,
+        features=X_test_agg,
+        feature_names=feature_names,
+        plot_type='dot'
+    )
+
+    return shap_values
+
+
+
+
+
+
+
+
+def print_feature_indices(feature_names):
+    """
+    Print the index and corresponding feature name.
+
+    Parameters:
+    ----------
+    feature_names : list
+        List of feature names from the dataset.
+    """
+    print("\nFeature Index Mapping:")
+    for idx, feature in enumerate(feature_names):
+        print(f"Index {idx}: {feature}")
+
+# Call function
+
+# %%
