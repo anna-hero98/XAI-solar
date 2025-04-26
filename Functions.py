@@ -724,6 +724,8 @@ def PreProcessDataset(data, control):
         Y_VAL=Y_VAL.reshape(int(Y_VAL.shape[0]/H), H, n_var_out)
         Y_TEST=Y_TEST.reshape(int(Y_TEST.shape[0]/H), H, n_var_out)
         
+        joblib.dump(Yscaler, "Yscaler.pkl")
+
         #these are the two variables to be output by this function
         Scaler = {
                   'X_data' : Xscaler,
@@ -744,6 +746,20 @@ def PreProcessDataset(data, control):
     else:
         print("\n\n\n WARNING: Your ML method is not supported by the 'PreProcessDataset' function.\n\n")
         print("Pre process end. ML_DATA =", ML_DATA, "Scaler =", Scaler)
+    
+        
+    # Ordner für alle Outputs (z.B. "CNN", "LSTM", etc.) anlegen
+    out_dir = os.path.join(".", control["MLtype"])
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Scaler dort ablegen
+    x_scaler_path = os.path.join(out_dir, "Xscaler.pkl")
+    y_scaler_path = os.path.join(out_dir, "Yscaler.pkl")
+
+    joblib.dump(Xscaler, x_scaler_path)
+    joblib.dump(Yscaler, y_scaler_path)
+
+    print(f"✅ Scaler gespeichert unter:\n  {x_scaler_path}\n  {y_scaler_path}")
     return ML_DATA, Scaler
 
 def series_to_forecast(data, n_in, n_out, dropnan=True):

@@ -10,6 +10,8 @@ import numpy as np
 import random
 import shap
 import lime
+import joblib
+
 import lime.lime_tabular
 import quantus
 from lime.lime_tabular import LimeTabularExplainer
@@ -38,12 +40,12 @@ import matplotlib.pyplot as plt
 # 1) Control The Script
 ###################################
 Control_Var = {
-    '_description_' : 'Holds variables that define the behaviour of the algorithm.',
+    '_description_' : 'Holds vari   ables that define the behaviour of the algorithm.',
     'resolution' : '60min', # 1sec, 1min, 5min, or 60min
     'SOLETE_builvsimport': 'Import', # 'Build' to expand the dataset, 'Import' to load an existing expansion
-    'SOLETE_save': False, # if True and 'Build', saves the expanded SOLETE dataset
+    'SOLETE_save': True, # if True and 'Build', saves the expanded SOLETE dataset
     'trainVSimport' : False, # True to train ML model, False to import a saved model
-    'saveMLmodel' : False, # if True and trainVSimport is True, saves the trained model
+    'saveMLmodel' : True, # if True and trainVSimport is True, saves the trained model
     'Train_Val_Test' : [70, 20, 10], # Train-Validation-Test division in percentages
     'Scaler': 'MinMax01', # 'MinMax01', 'MinMax11', or 'Standard'
     'IntrinsicFeature' : 'P_Solar[kW]', # feature to be predicted
@@ -182,7 +184,7 @@ else:
     np.save(BG_PATH, bg_indices)
 # Extract IntrinsicFeature in our case always P_Solar[kW]
 idx_remove = Control_Var['IntrinsicFeature']  
-
+MLtype = Control_Var['MLtype']
 # The intrinsic feature should be removed from the complete feature list nothing happens here apart from index
 #if idx_remove in Control_Var['PossibleFeatures']:
 #    idx_remove = Control_Var['PossibleFeatures'].index(idx_remove)  
@@ -191,11 +193,115 @@ idx_remove = Control_Var['IntrinsicFeature']
 # 
 
 
-shap_vals = get_explanations_2D(model, ML_DATA, ML_DATA['X_TEST'], feature_names=feature_names, background_samples=100, Control_Var=Control_Var, bg_indices=bg_indices)
+#shap_vals = get_explanations_2D(model, ML_DATA, ML_DATA['X_TEST'], feature_names=feature_names, background_samples=100, Control_Var=Control_Var, bg_indices=bg_indices)
 
 #S, globals_dict = ffc_explanation(model= model,X            = ML_DATA["X_TEST"],feature_names= ML_DATA["xcols"],ml_type      = Control_Var["MLtype"],n_samples    = 30,random_state = 42,make_plots   = True)
+plot_actual_pv_output(
+        ML_DATA=ML_DATA,
+        Control_Var=Control_Var,
+        horizon_index=10,  
+        bg_idx=bg_indices
+    )
+
+Yscaler = joblib.load(f"{MLtype}/Yscaler.pkl")
+
+for feature in feature_names:
+
+    grid_counterfactual_plots_unscaled_all_timesteps(
+        ML_DATA        = ML_DATA,
+        model          = model,
+        Scaler_y       = Yscaler,         # dein Ziel-Scaler
+        feature_names  = feature_names,
+        feature        = feature,
+        change_factors = [0.5, 0.75, 1.25, 1.50],
+        Control_Var    = Control_Var,
+        bg_indices     = bg_indices,     # optional: Subset
+        horizon_index  = -1,             # letzter Forecast-Schritt
+        max_cols       = 2
+    )
+    grid_cf_unscaled_with_inverse(
+        ML_DATA        = ML_DATA,
+        model          = model,
+        feature_names  = feature_names,
+        feature        = feature,
+        change_factors = [0.5, 0.75, 1.25, 1.5],
+        Control_Var    = Control_Var,
+        scaler_y       = Yscaler,        # ← unbedingt übergeben!
+        bg_indices     = bg_indices,      # optional
+        horizon_index  = -1,              # letzter Forecast-Schritt
+        max_cols       = 2
+    )
+    grid_counterfactual_plots_pct(
+        ML_DATA=ML_DATA,
+        model=model,
+        feature_names=feature_names,
+        feature=feature,
+        change_factors=[0.5, 0.75, 1.25, 1.5],
+        Control_Var=Control_Var,
+        bg_indices=bg_indices
+    )
+    
+    """
+    grid_cf_unscaled_direct(
+        ML_DATA        = ML_DATA,
+        model          = model,
+        feature_names  = feature_names,
+        feature        = feature,
+        change_factors = [0.5, 0.75, 1.25, 1.5],
+        Control_Var    = Control_Var,
+        bg_indices     = bg_indices,     # optional: dein Subset
+        horizon_index  = -1,             # letzter Forecast‐Schritt
+        max_cols       = 2
+    )
 
 
+
+    global_input_scaling_sensitivity(
+    ML_DATA        = ML_DATA,
+    model          = model,
+    factors        = [0.50, 0.75, 1.25, 1.50],
+    Control_Var    = Control_Var,
+    bg_indices     = bg_indices,               # optional: dein Subset
+    horizon_index  = Control_Var['H'] - 1      # letzter Forecast-Zeitschritt
+)
+
+    grid_counterfactual_plots_all_timesteps(
+        ML_DATA=ML_DATA,
+        model=model,
+        feature_names=feature_names,
+        feature=feature,
+        change_factors=[0.5, 0.75, 1.25, 1.5],
+        Control_Var=Control_Var,
+        bg_indices=bg_indices,
+        horizon_index=-1,   # Mittelwert über H oder z.B. 0…H-1
+        max_cols=2
+    )
+    """
+"""
+    cf_scatter_percent(
+        ML_DATA=ML_DATA,
+        model=model,
+        feature_names=feature_names,
+        feature=feature,
+        factors=(0.5, 0.75, 1.25, 1.5),
+        Control_Var=Control_Var,
+        timestep=-1,
+        bg_idx=bg_indices,       
+        jitter=0.3
+    )
+
+    scatter_cf_grid(ML_DATA=ML_DATA,
+        model=model,
+        feature_names=feature_names,
+        feature=feature,
+        change_factors=[0.5, 0.75, 1.25, 1.5],
+        Control_Var=Control_Var,
+                    timestep=-1,
+                    min_baseline=1e-3,
+                    bg_indices=bg_indices,
+                    max_cols=2)
+
+"""
 """
 
 train_sax, test_sax = generate_sax_for_dataset(
@@ -214,6 +320,7 @@ X_train_re = X_train.reshape(X_train.shape[0], -1)
 X_test_re = X_test.reshape(X_test.shape[0], -1)
 
 #print("idx_remove:", idx_remove)  
+
 # Initialize LIME Explainer
 explainer = LimeTabularExplainer(
     training_data=X_train.reshape(X_train_re.shape[0], -1),  # Flatten only for LIME explainer
@@ -227,7 +334,7 @@ selected_ids = generate_lime_explanations(
     X_train=X_train,
     X_test=X_test,
     feature_names=feature_names,
-    ml_type="CNN",
+    ml_type=ml_type,
     lime_predict_fn=lime_predict
 )
 
@@ -244,8 +351,6 @@ for feature in feature_names:
 )
 
 
-
-kurz auskommntirt
 plot_combined_pdp_ice(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature='GHI[kW1m2]',timestep=5)
 
 plot_ice_timeseries_feature(model=model,ML_DATA=ML_DATA,feature_names=feature_names,feature='GHI[kW1m2]',time_index=5)  # z. B. Mittag
@@ -274,7 +379,7 @@ plot_pdp_keras_model(model=model,ML_DATA=ML_DATA,feature_names=feature_names,fea
  #   print("SHAP DeepExplainer usage is not directly supported for non-Keras models.\n"
   #        "Use shap.TreeExplainer or shap.KernelExplainer for e.g. RF/SVM.")
 
-
+"""
 ##################################
 # 8) Example Counterfactual Generation
 ##################################
@@ -297,7 +402,6 @@ def generate_counterfactuals(ML_DATA, feature_list, features_to_be_reduced, redu
         else:
             new_ML_DATA[key] = ML_DATA[key].copy() if isinstance(ML_DATA[key], np.ndarray) else ML_DATA[key]
     return new_ML_DATA
-
 print("Counterfactuals for Solar decrease")
 solar_feats = ['GHI[kW1m2]', 'POA Irr[kW1m2]', 'P_Solar[kW]']
 # Calls the counterfactual
@@ -367,4 +471,3 @@ S, globals_dict = ffc_explanation(model= model,X            = ML_DATA["X_TEST"],
 
 shap_values = explain_model(Control_Var, model, X_test, feature_names, idx_remove)
 print_feature_indices(feature_names)
-"""

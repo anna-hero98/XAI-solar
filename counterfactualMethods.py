@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import os
 from matplotlib.backends.backend_pdf import PdfPages
 from functools import partial
+from typing import Sequence, Union
+
 
 from Functions import import_SOLETE_data, import_PV_WT_data, PreProcessDataset  
 from Functions import PrepareMLmodel, TestMLmodel, post_process
@@ -229,29 +231,7 @@ def shapelet_transform(data, shapelets):
             transformed_data[i, j] = min_distance(ts, shapelet)
     return transformed_data
 
-# =============================================================================
-# Beispielhafte Anwendung
-# =============================================================================
-if __name__ == "__main__":
-    # Beispiel: Erzeugen einer simulierten Zeitreihe (z. B. für P_Solar)
-    ts_example = np.sin(np.linspace(0, 2 * np.pi, 100))  # 1D-Zeitreihe
-    
-    # SAX-Transformation
-    sax_representation = sax_transform(ts_example, n_segments=10, alphabet_size=5)
-    print("SAX-Repräsentation:", sax_representation)
-    
-    # Simulierte Datensätze (zwei Dimensionen: n_samples x time_length)
-    np.random.seed(42)
-    simulated_data = np.array([np.sin(np.linspace(0, 2 * np.pi, 100)) + 0.1*np.random.randn(100)
-                               for _ in range(50)])
-    
-    # Extrahiere zufällig 5 Shapelets der Länge 20
-    shapelets = extract_shapelets(simulated_data, num_shapelets=5, shapelet_length=20, random_state=42)
-    print("Extrahierte Shapelets (Längen):", [len(s) for s in shapelets])
-    
-    # Shapelet-Transformation: Berechnung der minimalen Distanzen
-    transformed = shapelet_transform(simulated_data, shapelets)
-    print("Shapelet-transformierte Daten (Form):", transformed.shape)
+
 
 def lime_predict(input_data, X_train, model):
     """
@@ -298,8 +278,9 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
     import shap
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
-    
-    FIXED_XLIM = (-0.5, 0.5)  # Set fixed x-axis limits for all plots
+        
+    FIXED_LIMP_AGG = (-0.27,0.27)  # Set fixed x-axis limits for aggregated plot
+    FIXED_XLIM = (-0.27, 0.27)  # Set fixed x-axis limits for all plots
 
     # Dummy Outline-Klasse, die set_visible unterstützt
     class DummyOutline:
@@ -416,22 +397,21 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
         feature_names=feature_names,
         plot_type='dot',
         show=False,
-        sort=False,
-        xlim=FIXED_XLIM
+        sort=False
     )
-
+    plt.xlim(FIXED_LIMP_AGG) 
 
     model_folder = f"./{Control_Var['MLtype']}"
     os.makedirs(model_folder, exist_ok=True)
 
-    agg_filename = f"{Control_Var['MLtype']}_Shap_Aggregated.png"
+    agg_filename = f"{Control_Var['MLtype']}_Shap_Aggregated-clipp-skalamod.png"
     agg_filepath = os.path.join(model_folder, agg_filename)
     fig.savefig(agg_filepath, bbox_inches='tight', dpi=300)
     plt.close(fig)
     print(f"Aggregated SHAP summary plot saved as: {agg_filename}")
 
     # --- Per-Timestep SHAP Summary Plots in einem PDF ---
-    per_ts_filename = f"{Control_Var['MLtype']}_Shap_PerTimestep.pdf"
+    per_ts_filename = f"{Control_Var['MLtype']}_Shap_PerTimestep-clipp.pdf"
     per_ts_filepath  = os.path.join(model_folder, per_ts_filename) 
     with PdfPages(per_ts_filepath) as pdf:
         num_timesteps = shap_array.shape[1]  # Annahme: shap_array hat Form (samples, time_steps, features)
@@ -441,14 +421,14 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
             # Temporäres Überschreiben von plt.colorbar in diesem Kontext
             original_cb = plt.colorbar
             plt.colorbar = lambda *args, **kwargs: DummyColorbar()
+
             shap.summary_plot(
                 shap_values=shap_array[:, t, :],
                 features=X_test_3D[:, t, :],
                 feature_names=feature_names,
                 plot_type='dot',
                 show=False,
-                sort=False,
-                xlim=FIXED_XLIM
+                sort=False
             )
                             # Standard-Titel von shap.summary_plot entfernen (falls vorhanden).
             plt.title("")  
@@ -458,6 +438,7 @@ def get_explanations_2D(model, ML_DATA, X_test_3D, feature_names, background_sam
 
             # Mit subplots_adjust oder tight_layout genügend Platz für den Titel schaffen.
             # Variante A:
+            plt.xlim(FIXED_XLIM) 
             plt.subplots_adjust(top=0.95)  # je nach Bedarf anpassen (0.8, 0.9 etc.)
             model_folder = f"./{Control_Var['MLtype']}"
             agg_filepath = os.path.join(model_folder, per_ts_filename)
@@ -748,14 +729,14 @@ def generate_lime_explanations(
             explanation = explainer.explain_instance(test_instance[0], predict_fn)
             
             fig = explanation.as_pyplot_figure()
-            fig.suptitle(f"{ml_type} LIME Explanation for Test Instance {idx}", fontsize=14)
+            fig.suptitle(f"{ml_type} LIME Erklärung für den Testdatensatz {idx}", fontsize=14)
             pdf.savefig(fig)
             plt.close(fig)
 
     print(f"LIME-Erklärungen wurden in '{pdf_path}' gespeichert.")
     return used_indices
 
-def generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, feature, change_factor, Control_Var,
+def generate_and_plot_single_counterfactualP_old(ML_DATA, model, feature_names, feature, change_factor, Control_Var,
                                               idx_remove=None, is_keras_model=True, bg_indices=None):
     """
     Erzeugt Counterfactuals für ein oder mehrere Features mit einem bestimmten Faktor
@@ -796,6 +777,7 @@ def generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, featu
     # Wähle für die Vorhersagen das Subset der Testdaten, falls bg_indices übergeben wurde.
     if bg_indices is not None:
         X_test = ML_DATA['X_TEST'][bg_indices]
+        print(f"Using subset of X_TEST with indices: {bg_indices}")
     else:
         X_test = ML_DATA['X_TEST']
     
@@ -835,19 +817,50 @@ def generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, featu
         cf_mean = counterfactual_preds
 
     # Erstelle den Vergleichsplot
-    plt.figure(figsize=(10, 5))
-    plt.plot(orig_mean, label='Originale Vorhersage', alpha=0.7)
-    label_text = f"{'Erhöht' if change_factor > 1.0 else 'Reduziert'} um {int(abs((change_factor - 1)*100))}%"
-    feat_label = " + ".join(feature) if isinstance(feature, list) else feature
-    plt.plot(cf_mean, label=f'{feat_label} {label_text}', alpha=0.7)
-    plt.xlabel('Test-Samples')
-    plt.ylabel('Solarstromenergie-Vorhersage (kW)')
-    plt.title(f'Original vs. Counterfactual: {label_text}')
-    plt.legend()
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4), sharey=True)
+
 
     model_name = Control_Var['MLtype']
+
     safe_name = "_".join([f.replace(" ", "_").replace("[", "").replace("]", "").replace("/", "") 
                            for f in (feature if isinstance(feature, list) else [feature])])
+    label_text = f" {safe_name} {'erhöht' if change_factor > 1.0 else 'reduziert'} um {int(abs((change_factor - 1)*100))}%"
+    feat_label = " + ".join(feature) if isinstance(feature, list) else feature
+    ax.plot(cf_mean, label=f'{label_text}', alpha=0.7)
+        # -- linkes Panel: Original
+    axes[0].plot(orig_mean,
+                label='Originale Vorhersage',
+                linewidth=2,
+                color='tab:blue')
+    axes[0].set_title('Original')
+    axes[0].set_xlabel('Test‑Samples')
+    axes[0].set_ylabel('Solarstromenergie‑Vorhersage (kW)')
+    axes[0].legend(frameon=False)
+
+    # -- rechtes Panel: Counterfactual
+    axes[1].plot(cf_mean,
+                label=label_text,          # bleibt unverändert
+                linewidth=2,
+                linestyle='--',            # gestrichelt, besser erkennbar
+                color='tab:orange')
+    axes[1].set_title('Counterfactual')
+    axes[1].set_xlabel('Test‑Samples')
+    axes[1].legend(frameon=False)
+    ax.plot(orig_mean, label='Originale Vorhersage', alpha=0.7)
+    plt.xlabel('Testdatensätze')
+    plt.ylabel('Solarstromenergie-Vorhersage (kW)')
+    plt.title(f'{model_name} Original vs. Counterfactual:{label_text}')
+    
+    plt.legend()
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.15),   # unterhalb der x‑Achse
+        ncol=2,                        # mehrere Spalten
+        frameon=False
+    )
+    fig.tight_layout()
+
+
     direction = 'plus' if change_factor > 1 else 'minus'
     pct = int(abs((change_factor - 1)*100))
     file_name = f'{model_name}_counterfactual_combined_{safe_name}_{direction}{pct}pct.png'
@@ -857,9 +870,1493 @@ def generate_and_plot_single_counterfactual(ML_DATA, model, feature_names, featu
     plt.close()
     print(f"Saved combined plot: {file_name}")
 
+import math
+import matplotlib.pyplot as plt
+"""counterfactual_plots.py (Python ≥ 3.7 kompatibel)
+
+Hilfsfunktionen zur Erzeugung und Visualisierung von Counterfactual‑Szenarien
+für Regressionsmodelle, die Zeitreihen als 3‑D‑Tensor erwarten (Samples × 
+Zeitschritte × Features). Alle Typ‑Annotationen nutzen nun `typing.Optional`
+und `typing.Union`, sodass der Code auch unter Python 3.7/3.8/3.9 läuft.
+"""
+
+# ---------------------------------------------------------------------------
+# Standard‑Im­ports
+# ---------------------------------------------------------------------------
+import os
+import math
+from pathlib import Path
+from typing import Sequence, Union, Optional, Iterable, List
 
 import numpy as np
 import matplotlib.pyplot as plt
+"""counterfactual_plots.py  (Python ≥ 3.7 kompatibel)
+
+Hilfsfunktionen zur Erzeugung und Visualisierung von Counterfactual‑Szenarien
+für Regressionsmodelle, die Zeitreihen als 3‑D‑Tensor erwarten (Samples × 
+Zeitschritte × Features).
+Alle Typ‑Annotationen nutzen nun `typing.Optional` und `typing.Union`,
+sodass der Code auch unter Python 3.7/3.8/3.9 lauffähig ist.
+
+Neu → Abschnitt 4: *scatter_counterfactual_percent_change* erstellt einen
+Streudiagramm‑Vergleich „Prozentuale Änderung der Eingangsgröße vs. prozentuale
+Änderung der Modell‑Vorhersage“. Dies entspricht dem in der Diskussion
+gewünschten Darstellungsstil.
+"""
+
+# ---------------------------------------------------------------------------
+# Standard‑Im­ports
+# ---------------------------------------------------------------------------
+import os
+import math
+from pathlib import Path
+from typing import Sequence, Union, Optional, Iterable, List
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+"""counterfactual_plots.py  (Python ≥ 3.7 kompatibel)
+
+Hilfsfunktionen zur Erzeugung und Visualisierung von Counterfactual‑Szenarien
+für Regressionsmodelle, die Zeitreihen als 3‑D‑Tensor erwarten
+(Samples × Zeitschritte × Features).
+
+Wichtigste Änderungen gegenüber der Vorversion
+──────────────────────────────────────────────
+1. **Typ‑Annotationen** verwenden jetzt ausschließlich `typing.Optional` und
+   `typing.Union`; damit läuft der Code ohne Syntax‑Fehler bereits ab Python 3.7.
+2. **Ausgabepfade**: Alle Plots werden garantiert **unterhalb eines Verzeichnisses
+   mit dem Modellnamen** (`Control_Var['MLtype']`) gespeichert. Das Verzeichnis
+   wird vorher angelegt (``Path.mkdir(..., exist_ok=True)``).
+3. **Overlay‑Plot** (Original vs. CF) – beide Kurven in *einem* Diagramm.
+4. **Raster‑Plot** für mehrere Faktoren – kompaktes Grid inkl. gemeinsamer
+   Legende.
+5. **Scatter‑Diagramm** (*percent change in / out*) für typische
+   „What‑If‑Analysen“.
+
+"""
+# ---------------------------------------------------------------------------
+# Standard‑Im­ports
+# ---------------------------------------------------------------------------
+import os
+import math
+from pathlib import Path
+from typing import Sequence, Union, Optional, Iterable, List
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+"""counterfactual_plots.py  (Python ≥ 3.7 kompatibel)
+
+Hilfsfunktionen zur Erzeugung und Visualisierung von Counterfactual‑Szenarien
+für Regressionsmodelle, die Zeitreihen als 3‑D‑Tensor erwarten
+(Samples × Zeitschritte × Features).
+
+Wichtigste Änderungen gegenüber der Vorversion
+──────────────────────────────────────────────
+1. **Typ‑Annotationen** verwenden jetzt ausschließlich `typing.Optional` und
+   `typing.Union`; damit läuft der Code ohne Syntax‑Fehler bereits ab Python 3.7.
+2. **Ausgabepfade**: Alle Plots werden garantiert **unterhalb eines Verzeichnisses
+   mit dem Modellnamen** (`Control_Var['MLtype']`) gespeichert. Das Verzeichnis
+   wird vorher angelegt (``Path.mkdir(..., exist_ok=True)``).
+3. **Overlay‑Plot** (Original vs. CF) – beide Kurven in *einem* Diagramm.
+4. **Raster‑Plot** für mehrere Faktoren – kompaktes Grid inkl. gemeinsamer
+   Legende.
+5. **Scatter‑Diagramm** (*percent change in / out*) für typische
+   „What‑If‑Analysen“.
+
+"""
+# ---------------------------------------------------------------------------
+# Standard‑Im­ports
+# ---------------------------------------------------------------------------
+import os
+import math
+from pathlib import Path
+from typing import Sequence, Union, Optional, Iterable, List
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+###############################################################################
+# 1) Generische Counterfactual‑Routine                                        #
+###############################################################################
+
+def generate_counterfactuals(
+    data: dict,
+    feature_list: Sequence[str],
+    features_to_change: Union[str, Sequence[str]],
+    factor: float,
+    control_var: Optional[dict] = None,
+) -> dict:
+    """Erstellt eine manipulierte Kopie eines ``ML_DATA``‑ähnlichen Dicts.
+
+    Alle Keys, die mit ``"X_"`` beginnen, werden dupliziert; die angegebenen
+    Features werden um ``factor`` skaliert (Multiplikation). So bleibt das
+    Original‑Dict unverändert.
+    """
+    if isinstance(features_to_change, str):
+        features = [features_to_change]
+    else:
+        features = list(features_to_change)
+
+    indices = [feature_list.index(f) for f in features if f in feature_list]
+
+    new_data: dict = {}
+    for key, val in data.items():
+        if key.startswith("X_") and isinstance(val, np.ndarray):
+            arr = val.copy()
+            arr[..., indices] = arr[..., indices] * factor
+            new_data[key] = arr
+        else:
+            new_data[key] = val.copy() if isinstance(val, np.ndarray) else val
+    return new_data
+
+###############################################################################
+# 2) Overlay‑Plot (Original vs. ein Counterfactual)                           #
+###############################################################################
+
+def generate_and_plot_single_counterfactual(
+    ML_DATA: dict,
+    model,
+    feature_names: Sequence[str],
+    feature: Union[str, Sequence[str]],
+    change_factor: float,
+    Control_Var: dict,
+    *,
+    idx_remove: Optional[int] = None,
+    is_keras_model: bool = True,
+    bg_indices: Optional[Sequence[int]] = None,
+    outdir: Optional[Union[str, Path]] = None,
+) -> None:
+    """Erstellt *einen* Plot mit überlagerten Kurven (Original + CF).
+
+    *Speicherung* erfolgt immer im Unterordner ``./<MLtype>/``.
+    """
+    # ---------------------- Pfad‑Vorbereitung ------------------------------
+    model_tag = Control_Var.get("MLtype", "model")
+    outdir = Path(outdir or f"./{model_tag}")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    safe_feat = (
+        feature if isinstance(feature, str)
+        else "_".join(f.replace(" ", "_").replace("[", "").replace("]", "") for f in feature)
+    )
+    pct = int(abs((change_factor - 1) * 100))
+    direction = "plus" if change_factor > 1 else "minus"
+    fname = f"{model_tag}_counterfactual_{safe_feat}_{direction}{pct}pct.png"
+    fpath = outdir / fname
+
+    # ---------------------- Daten vorbereiten ------------------------------
+    X_test = ML_DATA["X_TEST"][bg_indices] if bg_indices is not None else ML_DATA["X_TEST"]
+    cf_data = generate_counterfactuals({"X_TEST": X_test}, feature_names, feature, change_factor)
+
+    y_orig = model.predict(X_test)
+    y_cf   = model.predict(cf_data["X_TEST"])
+    y_orig = y_orig.mean(axis=1) if y_orig.ndim > 1 else y_orig
+    y_cf   = y_cf.mean(axis=1)   if y_cf.ndim > 1 else y_cf
+
+    # ---------------------- Plot erstellen ---------------------------------
+    plt.figure(figsize=(10, 4))
+    plt.plot(y_orig, lw=2, color="tab:blue", label="Originale Vorhersage")
+
+    base_lbl = " + ".join(feature) if isinstance(feature, (list, tuple)) else feature
+    lbl = f"{base_lbl} {'erhöht' if change_factor > 1 else 'reduziert'} um {pct}%"
+    plt.plot(y_cf, lw=2, ls="--", color="tab:orange", label=lbl)
+
+    plt.xlabel("Test‑Datensätze")
+    plt.ylabel("PV‑Leistung [kW]")
+    plt.title(f"{model_tag}: Original vs. Counterfactual")
+    plt.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2, frameon=False)
+    plt.tight_layout()
+
+    plt.savefig(fpath, dpi=300, bbox_inches="tight")
+    plt.close()
+    print("✅ Overlay‑Plot gespeichert →", fpath)
+
+###############################################################################
+# 3) Raster‑Plot für mehrere Faktoren                                         #
+###############################################################################
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+
+def grid_counterfactual_plots_pct(
+    ML_DATA,
+    model,
+    feature_names,
+    feature,               # str oder list[str]
+    change_factors,        # z. B. [0.5, 0.75, 1.25, 1.5]
+    Control_Var,
+    bg_indices=None,
+    max_cols=2
+):
+    """
+    Baut auf grid_counterfactual_plots auf, plottet aber die %-Änderung der Vorhersage.
+    """
+
+    # Hilfsfunktion für Beschriftung
+    def _factor_label_pct(f):
+        pct = int(abs((f - 1) * 100))
+        dir_text = "↑" if f > 1 else "↓"
+        return f"{dir_text}{pct}%"
+
+    feat_label = feature if isinstance(feature, str) else "+".join(feature)
+    safe_name  = feat_label.replace("[","").replace("]","").replace(" ","_")
+    model_name = Control_Var["MLtype"]
+
+    # Raster-Größe bestimmen
+    n_plots = len(change_factors)
+    n_cols  = min(max_cols, n_plots)
+    n_rows  = math.ceil(n_plots / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(5*n_cols, 4*n_rows),
+                             sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    # Original-Vorhersage einmal berechnen
+    X_test = ML_DATA["X_TEST"][bg_indices] if bg_indices is not None else ML_DATA["X_TEST"]
+    orig_preds = model.predict(X_test)
+    orig_mean  = orig_preds.mean(axis=1) if orig_preds.ndim>1 else orig_preds
+
+    for i, factor in enumerate(change_factors):
+        ax = axes[i]
+
+        # Counterfactual erzeugen
+        # (hier nehme ich an, Du hast schon eine passende Funktion dafür)
+        cf_data   = generate_counterfactuals(
+                        {"X_TEST": X_test},
+                        feature_names,
+                        feature,
+                        factor,
+                        Control_Var
+                    )
+        cf_preds  = model.predict(cf_data["X_TEST"])
+        cf_mean   = cf_preds.mean(axis=1) if cf_preds.ndim>1 else cf_preds
+
+        # Prozentuale Änderung berechnen
+        # Achtung: orig_mean kann 0 sein! ggf. Maske setzen oder small_eps addieren
+        delta_pct = (cf_mean - orig_mean) / (orig_mean + 1e-6) * 100
+
+        # Plot
+        ax.scatter(
+            np.arange(len(delta_pct)),
+            delta_pct,
+            s=10,
+            alpha=0.7,
+            label=_factor_label_pct(factor)
+        )
+        ax.axhline(0, color="gray", linewidth=0.8)
+        ax.set_title(f"Faktor {factor:.2f} ({_factor_label_pct(factor)})")
+        ax.set_xlabel("Testdatensatz")
+        if i % n_cols == 0:
+            ax.set_ylabel("Δ Vorhersage [%]")
+        ax.grid(True, ls=":", lw=0.5)
+
+ 
+    fig.suptitle(f"{model_name}: %-Änderung der Vorhersage bei {feat_label}", y=1.02)
+    fig.tight_layout()
+
+    # Speichern im Modell-Verzeichnis
+    outdir = f"./{model_name}"
+    os.makedirs(outdir, exist_ok=True)
+    fname = f"{model_name}_counterfactual_{safe_name}_cf_pct_grid_{'-'.join(str(int((f-1)*100)) for f in change_factors)}.png"
+    fig.savefig(os.path.join(outdir, fname), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"✅ Raster mit %-Änderungen gespeichert als: {fname}")
+
+import os, math, matplotlib.pyplot as plt
+
+import os
+import math
+import matplotlib.pyplot as plt
+
+def grid_counterfactual_plots(
+    ML_DATA,
+    model,
+    feature_names,
+    feature,
+    change_factors,
+    Control_Var,
+    bg_indices=None,
+    timestep=0,
+    horizon_index=None,
+    max_cols=2
+):
+    """
+    Erstellt ein Raster von Original- vs. Counterfactual-Prognosen
+    für verschiedene Änderungsfaktoren an einem Input-Feature.
+
+    Parameters
+    ----------
+    ML_DATA : dict
+        Dict mit 'X_TEST' in Form (n_samples, PRE+1, n_features).
+    model :
+        Trainiertes Modell mit predict().
+    feature_names : list of str
+        Namen aller Features.
+    feature : str
+        Name des zu manipulierenden Features.
+    change_factors : list of float
+        Multiplikationsfaktoren (<1 = Reduktion, >1 = Erhöhung).
+    Control_Var : dict
+        Muss 'MLtype' enthalten (für Ordnernamen).
+    bg_indices : list of int oder None
+        Falls gesetzt: Untermenge von X_TEST nach Indizes.
+    timestep : int
+        Welcher Zeitschritt (0…PRE) verändert wird.
+    horizon_index : int oder None
+        Welcher Forecast-Horizont t+hi (0…H-1) geplottet wird;
+        None = Mittelwert über alle H Horizonte.
+    max_cols : int
+        Maximale Spaltenanzahl im Plot-Raster.
+    """
+
+    # 1) Verzeichnis anlegen
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # 2) Basis-Daten wählen
+    X_base = ML_DATA["X_TEST"][bg_indices] if bg_indices is not None else ML_DATA["X_TEST"]
+
+    # 3) Original-Vorhersage
+    preds_orig = model.predict(X_base)
+    if preds_orig.ndim > 1:
+        if horizon_index is None:
+            orig_vals = preds_orig.mean(axis=1)
+        else:
+            orig_vals = preds_orig[:, horizon_index]
+    else:
+        orig_vals = preds_orig
+
+    # 4) Raster-Plot aufbauen
+    n_plots = len(change_factors)
+    n_cols = min(max_cols, n_plots)
+    n_rows = math.ceil(n_plots / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(6 * n_cols, 4 * n_rows),
+                             sharex=True, sharey=True)
+    axes = axes.reshape(n_rows, n_cols)
+
+    # Index des Features
+    feat_idx = feature_names.index(feature)
+
+    # 5) Für jeden Faktor zeichnen
+    for i, fac in enumerate(change_factors):
+        r, c = divmod(i, n_cols)
+        ax = axes[r, c]
+
+        # Counterfactual erzeugen
+        X_cf = X_base.copy()
+        X_cf[:, timestep, feat_idx] *= fac
+
+        # Counterfactual-Vorhersage
+        preds_cf = model.predict(X_cf)
+        if preds_cf.ndim > 1:
+            if horizon_index is None:
+                cf_vals = preds_cf.mean(axis=1)
+            else:
+                cf_vals = preds_cf[:, horizon_index]
+        else:
+            cf_vals = preds_cf
+
+        # Plot Original + CF
+        ax.plot(orig_vals,
+                color="tab:blue",
+                label="Original",
+                linewidth=1.8, alpha=0.7)
+        ax.plot(cf_vals,
+                color="tab:orange",
+                linestyle="--",
+                label=f"{int((fac-1)*100)} %",
+                linewidth=1.8, alpha=0.8)
+
+        ax.set_title(f"Factor {fac:.2f}")
+        ax.set_xlabel("Testdatensatz")
+        if c == 0:
+            ax.set_ylabel("Prognose (kW)")
+        ax.grid(True, linewidth=0.3, alpha=0.4)
+
+    # 6) Gemeinsame Legende & Titel
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels,
+               loc="upper center",
+               bbox_to_anchor=(0.5, -0.02),
+               ncol=2, frameon=False, fontsize=10)
+
+    hi_text = f"t+{horizon_index}" if horizon_index is not None else "Mittel über H"
+    fig.suptitle(f"{ml_name}: Original vs. Counterfactuals für '{feature}' ({hi_text})",
+                 fontsize=14, y=1.02)
+    fig.tight_layout()
+
+    # 7) Speichern
+    fname = (
+        f"{ml_name}_counterfactual_{feature.replace('[','').replace(']','')}_grid_"
+        f"{'-'.join(str(int((f-1)*100)) for f in change_factors)}_{hi_text}.png"
+    )
+    out_path = os.path.join(out_dir, fname)
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"✅ Raster-Plot gespeichert unter: {out_path}")
+
+import os, math, numpy as np, matplotlib.pyplot as plt
+from typing import List, Optional
+
+def grid_cf_unscaled_with_inverse(
+    ML_DATA: dict,
+    model,
+    feature_names: List[str],
+    feature: str,
+    change_factors: List[float],
+    Control_Var: dict,
+    scaler_y,                            # ← dein Scaler-Objekt
+    bg_indices: Optional[List[int]] = None,
+    horizon_index: Optional[int]    = None,
+    max_cols: int                   = 2
+):
+    """
+    Erstellt CF-Rasterplots, diesmal auf unskalierten kW-Achsen,
+    indem wir sowohl original- als auch CF-Predictions inverse‐transformieren.
+    """
+    # Forecast-Horizon der Roh-Targets
+    Y = ML_DATA["Y_TEST"]    # (n_samples, H, 1), aber skaliert!
+    H = Y.shape[1]
+
+    # welche Zeitschritte?
+    if horizon_index is None:
+        horizons = list(range(H))
+    else:
+        hi = horizon_index if horizon_index >= 0 else H + horizon_index
+        hi = max(0, min(hi, H-1))
+        horizons = [hi]
+
+    # Ordner anlegen
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Index des Features
+    feat_idx = feature_names.index(feature)
+
+    # Inputs (ggf. Subset)
+    X_base = ML_DATA["X_TEST"]
+    if bg_indices is not None:
+        X_base = X_base[bg_indices]
+
+    # Für jeden Zeitschritt im Horizon:
+    for hi in horizons:
+        # --- 1) Original-Vorhersage vom Modell (skaliert)
+        y_orig_scaled = model.predict(X_base)
+        # falls Forecast über H ausgegeben:
+        if y_orig_scaled.ndim == 3:
+            y_orig_scaled = y_orig_scaled[:, hi, 0]
+        else:
+            y_orig_scaled = y_orig_scaled.ravel()
+        # inverse transform → echte kW
+        y_orig = scaler_y.inverse_transform(
+            y_orig_scaled.reshape(-1,1)
+        ).ravel()
+
+        # Setup für das Raster
+        n = len(change_factors)
+        cols = min(n, max_cols)
+        rows = math.ceil(n/cols)
+        fig, axes = plt.subplots(rows, cols,
+                                 figsize=(5*cols, 4*rows),
+                                 sharex=True, sharey=True)
+        axes = np.array(axes).reshape(rows, cols)
+
+        # Jede CF-Kurve
+        for idx, fac in enumerate(change_factors):
+            r, c = divmod(idx, cols)
+            ax = axes[r, c]
+
+            # erzeugen CF-Inputs
+            X_cf = X_base.copy()
+            X_cf[..., feat_idx] *= fac
+
+            # CF-Vorhersage (skaliert)
+            y_cf_scaled = model.predict(X_cf)
+            if y_cf_scaled.ndim == 3:
+                y_cf_scaled = y_cf_scaled[:, hi, 0]
+            else:
+                y_cf_scaled = y_cf_scaled.ravel()
+            # inverse → kW
+            y_cf = scaler_y.inverse_transform(
+                y_cf_scaled.reshape(-1,1)
+            ).ravel()
+
+            # plotten
+            ax.plot(y_orig,
+                    color="tab:blue", lw=1.5, alpha=0.7, label="Original [kW]")
+            ax.plot(y_cf,
+                    color="tab:orange", ls="--", lw=1.5, alpha=0.8,
+                    label=f"{int((fac-1)*100):+d}%")
+            ax.set_title(f"f = {fac:.2f}")
+            if c == 0:
+                ax.set_ylabel("P_Solar [kW]")
+            ax.set_xlabel("Testdatensatz")
+            ax.grid(alpha=0.3)
+
+        # Legende & Titel
+        h, l = axes[0,0].get_legend_handles_labels()
+        fig.legend(h, l,
+                   loc="upper center",
+                   bbox_to_anchor=(0.5, -0.05),
+                   ncol=2, frameon=False)
+        fig.suptitle(f"{ml_name}: Unskaliertes CF für '{feature}' (t={hi})",
+                     fontsize=14, y=1.02)
+        fig.tight_layout()
+
+        # Speichern
+        safe = feature.replace("[","").replace("]","").replace(" ","_")
+        fac_str = "-".join(f"{int((f-1)*100):+d}" for f in change_factors)
+        fn = f"{ml_name}_counterfactual_{safe}_unscaled_t{hi}_{fac_str}.png"
+        path = os.path.join(out_dir, fn)
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"✅ Unskaliertes CF-Raster gespeichert: {path}")
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+
+def global_input_scaling_sensitivity(
+    ML_DATA: dict,
+    model,
+    factors: list[float],
+    Control_Var: dict,
+    bg_indices =None,
+    horizon_index= None
+):
+    """
+    Skaliert **alle** Eingangs-Features gemeinsam um die gegebenen Faktoren
+    und zeichnet ΔInput[%] vs. ΔOutput[%] als Linien-Plot.
+
+    Parameters
+    ----------
+    ML_DATA : dict
+        Muss 'X_TEST' enthalten mit Shape (n_samples, PRE+1, n_features).
+    model :
+        Trainiertes Modell mit .predict()-Methode.
+    factors : list of float
+        Multiplikationsfaktoren (<1 = Reduktion, >1 = Erhöhung).
+    Control_Var : dict
+        Muss 'MLtype' enthalten für das Ausgabe-Verzeichnis.
+    bg_indices : list of int oder None
+        Falls angegeben, nur dieses Subset von X_TEST verwenden.
+    horizon_index : int oder None
+        Welchen Forecast-Horizont verwenden? None = Mittelwert über alle H.
+    """
+    # Ausgabe-Verzeichnis
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Basis-Daten
+    X_full = ML_DATA["X_TEST"]
+    X_base = X_full[bg_indices] if bg_indices is not None else X_full
+
+    # Basis-Vorhersage
+    y_base = model.predict(X_base)
+    if y_base.ndim > 1:
+        y_base = y_base.mean(axis=1) if horizon_index is None else y_base[:, horizon_index]
+    y_base_mean = np.mean(y_base)
+
+    # Vorbereitung der Listen für Plot
+    input_pct  = []
+    output_pct = []
+
+    for fac in factors:
+        # Skalieren aller Features um fac
+        X_cf = X_base * fac
+        y_cf = model.predict(X_cf)
+        if y_cf.ndim > 1:
+            y_cf = y_cf.mean(axis=1) if horizon_index is None else y_cf[:, horizon_index]
+        y_cf_mean = np.mean(y_cf)
+
+        # Prozentuale Änderungen
+        dx = (fac - 1.0) * 100
+        dy = (y_cf_mean - y_base_mean) / (y_base_mean if y_base_mean!=0 else 1e-9) * 100
+
+        input_pct.append(dx)
+        output_pct.append(dy)
+
+    # Zeichnen
+    plt.figure(figsize=(6,4))
+    plt.plot(input_pct, output_pct, marker='o', linestyle='-', linewidth=1.8)
+    for x, y, f in zip(input_pct, output_pct, factors):
+        plt.text(x, y, f"{int((f-1)*100)}%", ha='center', va='bottom', fontsize=9)
+    plt.axhline(0, color='grey', linewidth=0.7)
+    plt.axvline(0, color='grey', linewidth=0.7)
+    plt.xlabel("Δ Input [%]")
+    plt.ylabel("Δ Output [%]")
+    plt.title(f"{ml_name} – Global Sensitivity (alle Features)")
+    plt.grid(True, alpha=0.4)
+    plt.tight_layout()
+
+    # Speichern
+    fname = f"{ml_name}_counterfactual_global_input_sensitivity.png"
+    path  = os.path.join(out_dir, fname)
+    plt.savefig(path, dpi=300)
+    plt.close()
+    print(f"✅ Sensitivity-Plot gespeichert unter: {path}")
+
+import os
+import math
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+from typing import Optional
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+
+def plot_actual_pv_output(
+    ML_DATA: dict,
+    Control_Var: dict,
+    horizon_index: Optional[int] = None,
+    bg_idx: Optional[np.ndarray] = None
+) -> None:
+    """
+    Plottet die gemessene AC-Leistung P_Solar für einen gegebenen Forecast-Zeitschritt.
+
+    ML_DATA must contain 'Y_TEST' mit Shape (n_samples, H, 1).
+    horizon_index: Index im Forecast-Horizon (0…H-1). 
+                   None oder negative Zahl → letzter Schritt.
+    bg_idx: Optional[np.ndarray] → nur diese Test-Indizes verwenden.
+    """
+    # 1) Gesamtzahl der Forecast-Horizonte
+    y_full = ML_DATA["Y_TEST"]  # (n_samples, H, 1)
+    H = y_full.shape[1]
+
+    # 2) horizon_index auf gültigen Bereich bringen
+    if horizon_index is None:
+        hi = H - 1
+    else:
+        hi = horizon_index if horizon_index >= 0 else H + horizon_index
+        # z.B. -1 → H-1, -2 → H-2, etc.
+    hi = max(0, min(hi, H - 1))
+
+    # 3) Auswahl der Werte und Flatten auf 1-D
+    if bg_idx is not None:
+        y_sel = y_full[bg_idx, hi, 0]
+    else:
+        y_sel = y_full[:, hi, 0]
+
+    # 4) Plot erzeugen
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(y_sel, linewidth=1.5, label=f"Gemessene PV-Leistung t={hi}")
+    plt.xlabel("Testdatensatz")
+    plt.ylabel("P_Solar [kW]")
+    plt.title(f"{ml_name} – Gemessene PV-Leistung (Forecast-Horizon {hi})")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    fname = f"{ml_name}_actual_pv_t{hi}.png"
+    path  = os.path.join(out_dir, fname)
+    plt.savefig(path, dpi=300)
+    plt.close()
+    print(f"✅ Gespeichert unter: {path}")
+import os
+import math
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Optional
+
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Optional
+
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
+from typing import List, Optional
+
+def kw_formatter(x, pos):
+    return f"{x:.1f} kW"
+
+def grid_counterfactual_plots_all_timesteps(
+    ML_DATA: dict,
+    model,
+    feature_names: List[str],
+    feature: str,
+    change_factors: List[float],
+    Control_Var: dict,
+    bg_indices: Optional[List[int]] = None,
+    horizon_index: Optional[int] = None,
+    max_cols: int = 2
+):
+    """
+    Erstellt Rasterplots der Counterfactual-Vorhersagen für alle Forecast-Zeitschritte
+    bzw. für einen ausgewählten Zeitschritt (horizon_index) und annotiert in jedem Subplot
+    rₜ mit Mittelwert, Standardabweichung, Min und Max.
+    """
+    # Forecast-Horizon
+    y_full = ML_DATA["Y_TEST"]           # shape (n_samples, H, 1)
+    H = y_full.shape[1]
+
+    # Auswahl der Zeitschritte
+    if horizon_index is None:
+        horizons = list(range(H))
+    else:
+        hi = horizon_index if horizon_index >= 0 else H + horizon_index
+        hi = max(0, min(hi, H-1))
+        horizons = [hi]
+
+    # Ausgabeordner
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Feature-Index für Manipulation
+    feat_idx = feature_names.index(feature)
+
+    # Basis-X
+    X_base = ML_DATA["X_TEST"]
+    if bg_indices is not None:
+        X_base = X_base[bg_indices]
+
+    # Original-Vorhersage einmal laden
+    y_orig_full = model.predict(X_base)
+    if y_orig_full.ndim > 1:
+        y_orig_full = y_orig_full.reshape(y_orig_full.shape[0], -1)
+
+    # Für jedes t im Horizont
+    for hi in horizons:
+        y_orig = y_orig_full[:, hi]  # rₜ original
+
+        # Kennzahlen original
+        orig_mu, orig_sigma = y_orig.mean(), y_orig.std()
+        orig_min, orig_max = y_orig.min(), y_orig.max()
+        print(f"r_{hi} original — μ={orig_mu:.2f}, σ={orig_sigma:.2f}, "
+              f"min={orig_min:.2f}, max={orig_max:.2f} kW")
+
+        # Raster anlegen
+        n_plots = len(change_factors)
+        n_cols  = min(max_cols, n_plots)
+        n_rows  = math.ceil(n_plots / n_cols)
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                 figsize=(5*n_cols, 4*n_rows),
+                                 sharex=True, sharey=True)
+        axes = np.array(axes).reshape(n_rows, n_cols)
+
+        # Formatter für y-Achse
+        for ax in axes.flatten():
+            ax.yaxis.set_major_formatter(FuncFormatter(kw_formatter))
+            ax.set_ylabel("rₜ [kW]")
+
+        # Durch alle Faktoren
+        for idx, fac in enumerate(change_factors):
+            r, c = divmod(idx, n_cols)
+            ax = axes[r, c]
+
+            # Counterfactual-X erzeugen
+            X_cf = X_base.copy()
+            X_cf[..., feat_idx] *= fac
+
+            # Vorhersage
+            y_cf_full = model.predict(X_cf)
+            if y_cf_full.ndim > 1:
+                y_cf_full = y_cf_full.reshape(y_cf_full.shape[0], -1)
+            y_cf = y_cf_full[:, hi]
+
+            # Kennzahlen cf
+            cf_mu, cf_sigma = y_cf.mean(), y_cf.std()
+            cf_min, cf_max = y_cf.min(), y_cf.max()
+            print(f"  f={fac:.2f} → r_{hi} cf — μ={cf_mu:.2f}, σ={cf_sigma:.2f}, "
+                  f"min={cf_min:.2f}, max={cf_max:.2f} kW")
+
+            # Plotten
+            ax.plot(y_orig, color="tab:blue",
+                    linewidth=1.5, alpha=0.7, label="Original")
+            ax.plot(y_cf,   color="tab:orange",
+                    linestyle="--", linewidth=1.5, alpha=0.7,
+                    label=f"f={fac:.2f}")
+
+            # Annotation in der Grafik
+            info = (
+                f"orig μ={orig_mu:.1f}\n"
+                f"orig σ={orig_sigma:.1f}\n\n"
+                f"cf μ={cf_mu:.1f}\n"
+                f"cf σ={cf_sigma:.1f}"
+            )
+            ax.text(0.02, 0.95, info,
+                    transform=ax.transAxes,
+                    fontsize=8,
+                    verticalalignment="top",
+                    bbox=dict(facecolor="white", alpha=0.6, edgecolor="none"))
+
+            ax.set_title(f"{feature} · f={fac:.2f}")
+            ax.set_xlabel("Testdatensatz")
+            ax.grid(alpha=0.3)
+
+        # Gemeinsame Legende & Titel
+        handles, labels = axes[0,0].get_legend_handles_labels()
+        fig.legend(handles, labels,
+                   loc="upper center",
+                   bbox_to_anchor=(0.5, -0.02),
+                   ncol=2, frameon=False)
+        fig.suptitle(f"{ml_name}: rₜ (t={hi}) – Original vs. Counterfactual für '{feature}'",
+                     fontsize=14, y=1.02)
+        fig.tight_layout()
+
+        # Speichern
+        fac_str = "-".join(f"{int((f-1)*100)}" for f in change_factors)
+        safe_feat = feature.replace("[","").replace("]","").replace(" ","_")
+        fname = f"{ml_name}_counterfactual_{safe_feat}_grid__t{hi}_{fac_str}__.png"
+        path  = os.path.join(out_dir, fname)
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        print(f"✅ Rasterplot gespeichert: {path}\n")
+
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Optional
+
+def grid_cf_unscaled_direct(
+    ML_DATA: dict,
+    model,
+    feature_names: List[str],
+    feature: str,
+    change_factors: List[float],
+    Control_Var: dict,
+    bg_indices: Optional[List[int]] = None,
+    horizon_index: Optional[int] = None,
+    max_cols: int = 2
+):
+    """
+    Zeichnet für jeden Faktor ein Raster von Original- vs. CF-Vorhersagen
+    *unskaliert*, indem es direkt Y_TEST verwendet.
+    """
+    # Roh-Zielwerte
+    Y = ML_DATA["Y_TEST"]    # shape (n_samples, H, 1)
+    H = Y.shape[1]
+
+    # welche Zeitschritte?
+    if horizon_index is None:
+        horizons = list(range(H))
+    else:
+        hi = horizon_index if horizon_index >= 0 else H + horizon_index
+        hi = max(0, min(hi, H-1))
+        horizons = [hi]
+
+    # Ordner
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Index des manipulierten Features
+    feat_idx = feature_names.index(feature)
+
+    # Basis-Inputs (ggf. Subset)
+    X_base = ML_DATA["X_TEST"]
+    if bg_indices is not None:
+        X_base = X_base[bg_indices]
+
+    # Schleife über Zeitschritte
+    for hi in horizons:
+        # Original: direkt aus Y_TEST
+        if bg_indices is not None:
+            y_orig = Y[bg_indices, hi, 0]
+        else:
+            y_orig = Y[:, hi, 0]
+
+        # Setup Raster
+        n = len(change_factors)
+        cols = min(max_cols, n)
+        rows = math.ceil(n/cols)
+        fig, axes = plt.subplots(rows, cols,
+                                 figsize=(5*cols, 4*rows),
+                                 sharex=True, sharey=True)
+        axes = np.array(axes).reshape(rows, cols)
+
+        for idx, fac in enumerate(change_factors):
+            r, c = divmod(idx, cols)
+            ax = axes[r, c]
+
+            # Counterfactual
+            X_cf = X_base.copy()
+            X_cf[..., feat_idx] *= fac
+
+            # Vorhersage skalierte Modell-Ausgabe → bleibt skalierte Werte,
+            # aber wir plotten ja nur zur Gegenüberstellung:
+            y_cf_full = model.predict(X_cf)
+            # falls Forecast-Horizon ausgegeben wird, indexieren:
+            if y_cf_full.ndim == 3:
+                y_cf = y_cf_full[:, hi, 0]
+            else:
+                y_cf = y_cf_full.ravel()
+
+            # Plot
+            ax.plot(y_orig,
+                    color="tab:blue",
+                    lw=1.5,
+                    alpha=0.7,
+                    label="Y_TEST (kW)")
+            ax.plot(y_cf,
+                    color="tab:orange",
+                    ls="--",
+                    lw=1.5,
+                    alpha=0.8,
+                    label=f"{int((fac-1)*100):+d}%")
+            ax.set_title(f"f = {fac:.2f}")
+            if c == 0:
+                ax.set_ylabel("P_Solar [kW] (unskaliert)")
+            ax.set_xlabel("Testdatensatz")
+            ax.grid(alpha=0.3)
+
+        # Legende
+        h, l = axes[0,0].get_legend_handles_labels()
+        fig.legend(h, l, loc="upper center", bbox_to_anchor=(0.5, -0.05),
+                   ncol=2, frameon=False)
+        fig.suptitle(f"{ml_name}: Unskaliertes CF-Raster für '{feature}' (t={hi})",
+                     fontsize=14, y=1.02)
+        fig.tight_layout()
+
+        # Speichern
+        feat_safe = feature.replace("[","").replace("]","").replace(" ","_")
+        fac_str = "-".join(f"{int((f-1)*100):+d}" for f in change_factors)
+        fn = f"{ml_name}_counterfactual_{feat_safe}_unscaled_t{hi}_{fac_str}_.png"
+        path = os.path.join(out_dir, fn)
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"✅ Unskaliertes CF-Raster gespeichert: {path}")
+
+import os
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+from typing import List, Optional
+
+def grid_counterfactual_plots_unscaled_all_timesteps(
+    ML_DATA: dict,
+    model,
+    Scaler_y,                              # entweder ein Scaler mit inverse_transform oder ein anderes Objekt
+    feature_names: List[str],
+    feature: str,
+    change_factors: List[float],
+    Control_Var: dict,
+    bg_indices: Optional[List[int]] = None,
+    horizon_index: Optional[int] = None,
+    max_cols: int = 2
+):
+    """
+    Rasterplots der Counterfactual-Vorhersagen **unskaliert**
+    für alle oder einen ausgewählten Forecast-Zeitschritt.
+
+    Wenn Scaler_y.inverse_transform nicht existiert, wird stattdessen
+    ML_DATA["Y_TEST"] als Ground-Truth genutzt.
+    """
+    # Unskalierte Ground-Truth
+    Y_test_full = ML_DATA["Y_TEST"]           # shape (n_samples, H, 1)
+    H = Y_test_full.shape[1]
+
+    # Welche Zeitschritte?
+    if horizon_index is None:
+        horizons = list(range(H))
+    else:
+        hi = horizon_index if horizon_index >= 0 else H + horizon_index
+        hi = max(0, min(hi, H-1))
+        horizons = [hi]
+
+    # Ordner für Ausgaben
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Index des manipulierten Features
+    feat_idx = feature_names.index(feature)
+
+    # Basis-Testdaten (ggf. Subset)
+    X_base = ML_DATA["X_TEST"]
+    if bg_indices is not None:
+        X_base = X_base[bg_indices]
+
+    # Skalierte Original-Vorhersage
+    y_orig_scaled = model.predict(X_base)
+    # Falls (n_samples, H, 1) → (n_samples, H)
+    if y_orig_scaled.ndim == 3:
+        y_orig_scaled = y_orig_scaled[..., 0]
+
+    for hi in horizons:
+        # 1) Unskalierte Original-Vorhersage für t = hi
+        y_orig_h_scaled = y_orig_scaled[:, hi].reshape(-1, 1)
+        if hasattr(Scaler_y, "inverse_transform"):
+            y_orig = Scaler_y.inverse_transform(y_orig_h_scaled).ravel()
+        else:
+            # Fallback: Ground-Truth aus Y_TEST
+            if bg_indices is not None:
+                y_orig = Y_test_full[bg_indices, hi, 0]
+            else:
+                y_orig = Y_test_full[:, hi, 0]
+
+        # Raster-Layout
+        n = len(change_factors)
+        cols = min(max_cols, n)
+        rows = math.ceil(n / cols)
+        fig, axes = plt.subplots(rows, cols,
+                                 figsize=(5 * cols, 4 * rows),
+                                 sharex=True, sharey=True)
+        axes = np.array(axes).reshape(rows, cols)
+
+        for idx, fac in enumerate(change_factors):
+            r, c = divmod(idx, cols)
+            ax = axes[r, c]
+
+            # Counterfactual-Daten erzeugen
+            X_cf = X_base.copy()
+            X_cf[..., feat_idx] *= fac
+
+            # Vorhersage + unskalieren
+            y_cf_scaled = model.predict(X_cf)
+            if y_cf_scaled.ndim == 3:
+                y_cf_scaled = y_cf_scaled[..., 0]
+            y_cf_h_scaled = y_cf_scaled[:, hi].reshape(-1, 1)
+
+            if hasattr(Scaler_y, "inverse_transform"):
+                y_cf = Scaler_y.inverse_transform(y_cf_h_scaled).ravel()
+            else:
+                # Fallback: direkt skaliert lassen
+                y_cf = y_cf_h_scaled.ravel()
+
+            # Plot
+            ax.plot(y_orig,
+                    color="tab:blue",
+                    linewidth=1.5,
+                    alpha=0.7,
+                    label="Original")
+            ax.plot(y_cf,
+                    color="tab:orange",
+                    linestyle="--",
+                    linewidth=1.5,
+                    alpha=0.8,
+                    label=f"{int((fac-1)*100):+d}%")
+            ax.set_title(f"f = {fac:.2f}")
+            if c == 0:
+                ax.set_ylabel("P_Solar [kW] unskaliert")
+            ax.set_xlabel("Testdatensatz")
+            ax.grid(alpha=0.3)
+
+        # Gemeinsame Legende unter dem Raster
+        handles, labels = axes[0, 0].get_legend_handles_labels()
+        fig.legend(handles, labels,
+                   loc="upper center",
+                   bbox_to_anchor=(0.5, -0.05),
+                   ncol=2, frameon=False)
+        fig.suptitle(f"{ml_name}: Unskaliertes CF-Raster für '{feature}' (t={hi})",
+                     fontsize=14, y=1.02)
+        fig.tight_layout()
+
+        # Speichern
+        feat_safe = feature.replace("[", "").replace("]", "").replace(" ", "_")
+        fac_str = "-".join(f"{int((f-1)*100):+d}" for f in change_factors)
+        fname = f"{ml_name}_counterfactual_{feat_safe}_unscaled_t{hi}_{fac_str}.png"
+        path = os.path.join(out_dir, fname)
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"✅ Unscaled Counterfactual-Raster gespeichert: {path}")
+
+###############################################################################
+# 4) Scatter‑Plot (Prozentuale Änderung EIN‑ vs. AUS‑Größe)                   #
+###############################################################################
+from typing import Optional
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+
+def plot_actual_pv_output(
+    ML_DATA: dict,
+    Control_Var: dict,
+    horizon_index: Optional[int] = None,
+    bg_idx: Optional[np.ndarray] = None
+) -> None:
+    """
+    Plottet die gemessene AC-Leistung P_Solar für einen gegebenen Forecast-Zeitschritt.
+
+    ML_DATA must contain 'Y_TEST' mit Shape (n_samples, H, 1).
+    horizon_index: Index im Forecast-Horizon (0…H-1). 
+                   None oder negative Zahl → letzter Schritt.
+    bg_idx: Optional[np.ndarray] → nur diese Test-Indizes verwenden.
+    """
+    # 1) Gesamtzahl der Forecast-Horizonte
+    y_full = ML_DATA["Y_TEST"]  # (n_samples, H, 1)
+    H = y_full.shape[1]
+
+    # 2) horizon_index auf gültigen Bereich bringen
+    if horizon_index is None:
+        hi = H - 1
+    else:
+        hi = horizon_index if horizon_index >= 0 else H + horizon_index
+        # z.B. -1 → H-1, -2 → H-2, etc.
+    hi = max(0, min(hi, H - 1))
+
+    # 3) Auswahl der Werte und Flatten auf 1-D
+    if bg_idx is not None:
+        y_sel = y_full[bg_idx, hi, 0]
+    else:
+        y_sel = y_full[:, hi, 0]
+
+    # 4) Plot erzeugen
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(y_sel, linewidth=1.5, label=f"Gemessene PV-Leistung t={hi}")
+    plt.xlabel("Testdatensatz")
+    plt.ylabel("P_Solar [kW]")
+    plt.title(f"{ml_name} – Gemessene PV-Leistung (Forecast-Horizon {hi})")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+
+    fname = f"{ml_name}_actual_pv_t{hi}.png"
+    path  = os.path.join(out_dir, fname)
+    plt.savefig(path, dpi=300)
+    plt.close()
+    print(f"✅ Gespeichert unter: {path}")
+
+
+def scatter_counterfactual_percent_change(
+    ML_DATA: dict,
+    model,
+    feature_names: Sequence[str],
+    feature: Union[str, Sequence[str]],
+    Control_Var: dict,
+    *,
+    factors: Iterable[float] = (0.5, 1.5),
+    bg_indices: Optional[Sequence[int]] = None,
+    outdir: Optional[Union[str, Path]] = None,
+    agg_fn: str = "mean",        # "mean" oder "sum": wie PV‑Ertrag pro Sample aggregiert wird
+) -> None:
+    """Scatter‑Plot: Δ% Input → Δ% Output.
+
+    * Die *prozentuale* Änderung des/der manipulierten Features wird als
+      x‑Achse genutzt (gemittelt über PRE‑Zeitschritte).
+    * Die y‑Achse zeigt die *prozentuale* Abweichung der Modellprognose –
+      wahlweise Mittelwert oder Summe über den Vorhersagehorizont.
+
+    Damit entspricht die Darstellung gängigen CF‑Plots in Energie‑ oder
+    Demand‑Forecast‑Literatur (vgl. Abbildung in Kilickaya et al., 2021).
+    """
+    # ---------------- I/O‑Pfad -------------------------------------------------
+    model_tag = Control_Var.get("MLtype", "model")
+    outdir = Path(outdir or f"./{model_tag}")
+    outdir.mkdir(exist_ok=True)
+
+    # ---------------- Originaldaten & ‑Prognose -------------------------------
+    X_test = ML_DATA["X_TEST"][bg_indices] if bg_indices is not None else ML_DATA["X_TEST"]
+    y_orig = model.predict(X_test)
+    if y_orig.ndim == 2:
+        y_orig = y_orig.mean(axis=1) if agg_fn == "mean" else y_orig.sum(axis=1)
+
+    # Feature(s) vorbereiten ---------------------------------------------------
+    if isinstance(feature, str):
+        feat_list = [feature]
+    else:
+        feat_list = list(feature)
+
+    feat_idx = [feature_names.index(f) for f in feat_list]
+    x_orig = X_test[..., feat_idx].mean(axis=(1, 2))  # Mittel über PRE + ggf. mehrere Features
+
+    n_fig = len(list(factors))
+    plt.figure(figsize=(6 * n_fig, 4))
+
+    for k, factor in enumerate(factors):
+        cf_data = generate_counterfactuals({"X_TEST": X_test}, feature_names, feat_list, factor)
+        X_cf  = cf_data["X_TEST"]
+        y_cf  = model.predict(X_cf)
+        if y_cf.ndim == 2:
+            y_cf = y_cf.mean(axis=1) if agg_fn == "mean" else y_cf.sum(axis=1)
+
+        x_cf  = X_cf[..., feat_idx].mean(axis=(1, 2))
+
+        # ---------------- Prozentuale Änderungen --------------------------
+        # Vermeide Division durch Null, indem  sehr kleine |orig| durch eps ersetzt werden
+        eps = np.finfo(float).eps
+        delta_x = (x_cf - x_orig) / np.where(np.abs(x_orig) < eps, eps, x_orig) * 100.0
+        delta_y = (y_cf - y_orig) / np.where(np.abs(y_orig) < eps, eps, y_orig) * 100.0
+
+        ax = plt.subplot(1, n_fig, k + 1)
+        ax.scatter(delta_x, delta_y, alpha=0.7)
+        ax.set_xlabel("Δ Input [%]")
+        if k == 0:
+            ax.set_ylabel("Δ Vorhersage [%]")
+        pct = int(abs((factor - 1) * 100))
+        ax.set_title(f"Faktor {factor:.2f} (±{pct}%)")
+        ax.grid(True, lw=0.3, alpha=0.4)
+
+    feat_title = " + ".join(feat_list)
+    plt.suptitle(f"Counterfactual Scatter ({feat_title}) – Modell: {model_tag}")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    safe_name = "_".join(f.replace(" ", "_").replace("[", "").replace("]", "") for f in feat_list)
+    fname = f"{model_tag}_scatter_{safe_name}.png"
+    plt.savefig(outdir / fname, dpi=300, bbox_inches="tight")
+    plt.close()
+    print("✅ Scatter‑Plot gespeichert →", outdir / fname)
+
+# ================================================================
+#  Mini‑Helfer: nur EIN Feature (oder Liste) im letzten PRE‑Step
+#  multiplizieren; verändert nur X_TEST und lässt alles andere
+#  unangetastet.
+# ================================================================
+def mini_generate_counterfactuals(X_test, feature_names,
+                                  features_to_change, factor):
+    if isinstance(features_to_change, str):
+        features_to_change = [features_to_change]
+
+    cf = X_test.copy()            # (samples, PRE+1, features)
+    for feat in features_to_change:
+        idx = feature_names.index(feat)
+        cf[:, -1, idx] *= factor  # nur letzter PRE‑Zeitschritt
+    return cf
+
+
+# ================================================================
+#  Scatter‑Grid  Δ Input‑Prozent  vs.  Δ Output‑Prozent
+# ================================================================
+import os, math
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def scatter_cf_grid(ML_DATA,
+                    model,
+                    feature_names,
+                    feature,
+                    change_factors,
+                    Control_Var,
+                    timestep=-1,
+                    min_baseline=1e-3,
+                    bg_indices=None,
+                    max_cols=2):
+    """
+    * ML_DATA          Dict mit X_TEST usw.
+    * model            trainiertes Keras‑Modell
+    * feature          str ODER list[str] – wird skaliert
+    * change_factors   Iterable (z. B. [0.5,0.75,1.25,1.5])
+    * timestep         Welcher PRE‑Index soll manipuliert werden?
+                       −1 = letzter PRE‑Step
+    """
+
+    # ------------------------------------------------------------
+    # Grundlage wählen: gesamtes X_TEST oder Subset
+    # ------------------------------------------------------------
+    X_test = ML_DATA["X_TEST"][bg_indices] if bg_indices is not None \
+             else ML_DATA["X_TEST"]
+
+    # ------------------------------------------------------------
+    # Vorwärts­propagation ORIGINAL
+    # ------------------------------------------------------------
+    y_orig = model.predict(X_test, verbose=0)
+    y_orig = y_orig.mean(axis=1) if y_orig.ndim > 1 else y_orig   # → (N,)
+
+    # ------------------------------------------------------------
+    # Plot‑Raster vorbereiten
+    # ------------------------------------------------------------
+    n      = len(change_factors)
+    n_cols = min(max_cols, n)
+    n_rows = math.ceil(n / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(5*n_cols, 4*n_rows),
+                             sharex=False, sharey=False)
+    axes = np.atleast_2d(axes)      # immer 2‑D‑Array
+
+    feat_lbl  = " + ".join(feature) if isinstance(feature, list) else feature
+    safe_lbl  = "_".join([f.replace(" ","_").replace("[","").replace("]","")
+                          for f in (feature if isinstance(feature, list)
+                                    else [feature])])
+    model_dir = f"./{Control_Var['MLtype']}"
+    os.makedirs(model_dir, exist_ok=True)
+
+    # ------------------------------------------------------------
+    # Schleife über alle Skalierungs­faktoren
+    # ------------------------------------------------------------
+    for i, fct in enumerate(change_factors):
+        r, c = divmod(i, n_cols)
+        ax   = axes[r, c]
+
+        # --- Counterfactual erzeugen ----------------------------
+        X_cf     = mini_generate_counterfactuals(X_test, feature_names,
+                                                 feature, fct)
+        y_cf     = model.predict(X_cf, verbose=0)
+        y_cf     = y_cf.mean(axis=1) if y_cf.ndim > 1 else y_cf
+
+        # --- Prozent­änderungen berechnen -----------------------
+        # Eingangs‑Baseline: derselbe timestep wie manipuliert
+        idxs = [feature_names.index(feat)
+                for feat in (feature if isinstance(feature, list)
+                             else [feature])]
+        x_base = X_test[:, timestep, idxs].mean(axis=1)
+        x_cf   = X_cf[:,  timestep, idxs].mean(axis=1)
+
+        d_in  = 100 * (x_cf - x_base) / np.maximum(np.abs(x_base),
+                                                   min_baseline)
+        d_out = 100 * (y_cf - y_orig) / np.maximum(np.abs(y_orig),
+                                                   min_baseline)
+
+        # --- Scatter Plot ---------------------------------------
+        ax.scatter(d_in, d_out, s=20, alpha=0.7)
+        ax.set_title(f"Faktor {fct:.2f} "
+                     f"({int(abs(fct-1)*100)} %)")
+        ax.set_xlabel("Δ Input [%]")
+        ax.set_ylabel("Δ Output [%]")
+        ax.grid(True, linewidth=0.3, alpha=0.4)
+
+    fig.suptitle(f"{Control_Var['MLtype']}: Counterfactual‑Wirkung "
+                 f"für {feat_lbl}", fontsize=14, y=1.02)
+    fig.tight_layout()
+
+    # ------------------------------------------------------------
+    # Speichern
+    # ------------------------------------------------------------
+    fname = (f"{Control_Var['MLtype']}_counterfactual_{safe_lbl}_cf_scatter_"
+             f"{'-'.join(str(int((f-1)*100)) for f in change_factors)}.png")
+    fig.savefig(os.path.join(model_dir, fname),
+                dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"✅ Scatter‑Plot gespeichert unter {fname}")
+
+
+import os, numpy as np, matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
+from typing import List, Sequence, Union, Tuple
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+
+
+def cf_scatter_percent(
+        ML_DATA,
+        model,
+        feature_names,
+        feature,
+        factors=(0.50, 0.75, 1.25, 1.50),
+        Control_Var=None,
+        timestep=0,
+        bg_idx=None,
+        jitter=0.3,
+        lin_thresh=20       # Hier kleinerer Threshold für bessere Detaildarstellung
+):
+    """
+    Δ-Input [%] vs Δ-Output [%] im Raster, mit symlog und korrekter Legende.
+    """
+    # 1) Vorbereitung
+    ml_name = Control_Var["MLtype"]
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
+
+    X_base = ML_DATA["X_TEST"][bg_idx] if bg_idx is not None else ML_DATA["X_TEST"]
+    y_base = model.predict(X_base)
+    if y_base.ndim > 1:
+        y_base = y_base.mean(axis=1)
+
+    # wenn nur ein Feature, in Liste umwandeln
+    if isinstance(feature, str):
+        feature = [feature]
+    feat_idx = [feature_names.index(f) for f in feature]
+
+    # 2) Subplots anlegen
+    n_fac = len(factors)
+    fig, axes = plt.subplots(1, n_fac, figsize=(5*n_fac, 4), sharey=True)
+    if n_fac == 1:
+        axes = [axes]
+
+    rng = np.random.default_rng(42)
+
+    # 3) Schleife über die Faktoren
+    for ax, fac in zip(axes, factors):
+        # Counterfactual-Daten generieren
+        X_cf = X_base.copy()
+        X_cf[:, timestep, feat_idx] *= fac
+
+        y_cf = model.predict(X_cf)
+        if y_cf.ndim > 1:
+            y_cf = y_cf.mean(axis=1)
+
+        # Prozentuale Änderung
+        delta_y = (y_cf - y_base) / np.maximum(np.abs(y_base), 1e-9) * 100
+        mask = np.abs(y_base) > 0.01  # nur Samples, bei denen orig > 0.01 kW
+        delta_y = delta_y[mask]
+
+        delta_y += rng.normal(0, jitter, size=delta_y.shape)
+
+        # Label mit Pfeil
+        arrow = "↓" if fac < 1.0 else "↑"
+        pct   = abs(int((fac - 1.0)*100))
+        lbl   = f"{arrow}{pct}%"
+
+        ax.scatter(
+            np.arange(len(delta_y)),
+            delta_y,
+            s=20, alpha=0.7,
+            label=lbl
+        )
+        ax.set_title(f"Faktor {fac:.2f} ({lbl})")
+        ax.set_xlabel("Testdatensatz")
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+
+        # symlog für Y-Achse
+        ax.set_yscale('symlog', linthresh=lin_thresh)
+        ax.axhline(0, color='gray', linewidth=1)
+
+    axes[0].set_ylabel("Δ Vorhersage [%]")
+    fig.suptitle(f"{ml_name}: %-Änderung der Vorhersage bei {feature[0]}", fontsize=14)
+    fig.tight_layout(rect=[0,0,1,0.95])
+
+    # 4) **Legende aus allen Subplots zusammenführen**
+    all_h = []
+    all_l = []
+    for ax in axes:
+        h, l = ax.get_legend_handles_labels()
+        all_h.extend(h)
+        all_l.extend(l)
+    # Einzigartige Einträge behalten (Reihenfolge bleibt erhalten)
+    seen = set()
+    uniq_h = []
+    uniq_l = []
+    for handle, label in zip(all_h, all_l):
+        if label not in seen:
+            uniq_h.append(handle)
+            uniq_l.append(label)
+            seen.add(label)
+
+    fig.legend(
+        uniq_h, uniq_l,
+        loc="lower center",
+        ncol=n_fac,
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.02)
+    )
+
+    # 5) Speichern
+    safe_feat = feature[0].replace('[','').replace(']','').replace('/','_')
+    fname = f"{ml_name}_counterfactual_{safe_feat}_cf_scatter___.png"
+    fig.savefig(os.path.join(out_dir, fname), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"✅ Gespeichert: {os.path.join(out_dir, fname)}")
+
 
 def plot_pdp_keras_model(model, ML_DATA, feature_names, feature, value_range=None, is_keras_model=True):
     """
@@ -1187,7 +2684,7 @@ def plot_counterfactual_comparison(original_preds, counterfactual_preds, modifie
     plt.scatter(modified_indices, orig_mean[modified_indices], color='red', label='Modifizierte Inputs (Original)', zorder=5)
     plt.scatter(modified_indices, cf_mean[modified_indices], color='green', label='Modifizierte Inputs (CF)', zorder=6)
 
-    plt.xlabel('Test Sample Index')
+    plt.xlabel('Testdatensatz')
     plt.ylabel('Predicted Output')
     plt.title('Vergleich: Original vs. Counterfactual Vorhersagen')
     plt.legend()
@@ -1202,7 +2699,7 @@ def plot_counterfactual_comparison(original_preds, counterfactual_preds, modifie
     plt.scatter(modified_indices, delta[modified_indices], color='red', label='Modified Samples', zorder=5)
     plt.xlabel('Test Sample Index')
     plt.ylabel('Differenz der Vorhersage')
-    plt.title('Auswirkung von 50% Erhöhung din Column 7')
+    plt.title('Auswirkung von 50% Erhöhung in Column 7')
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -1420,7 +2917,7 @@ def analyze_counterfactuals(
         obs_plot = obs_mean[start:end]
         plt.plot(x_plot, obs_plot, '--', color='black', label='Observed')
     
-    plt.xlabel('Test-Sample')
+    plt.xlabel('Testdatensatz')
     plt.ylabel('P_Solar Prognose')
     plt.legend()
     plt.grid(True)
@@ -1439,7 +2936,7 @@ def analyze_counterfactuals(
         if len(manipulated_idx_in_range) > 0:
             plt.scatter(manipulated_idx_in_range, delta[manipulated_idx_in_range],
                         color='red', s=50, zorder=5, label='Manipulierte Delta')
-    plt.xlabel('Test-Sample')
+    plt.xlabel('Testdatensatz')
     plt.ylabel('Abweichung')
     plt.grid(True)
     plt.legend()
