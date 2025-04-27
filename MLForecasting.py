@@ -60,7 +60,7 @@ Control_Var = {
     ],
     'MLtype' : 'CNN',      # One of: 'RF', 'SVM', 'LSTM', 'CNN', or 'CNN_LSTM'
     'H' : 10,              # Forecast horizon in number of samples
-    'PRE' : 5,             # Number of previous samples used as input
+    'PRE' : 5,             # Number of previous samples used as input -- total PRE + 1
 }
 
 ##################################
@@ -226,9 +226,9 @@ for feature in feature_names:
         feature        = feature,
         change_factors = [0.5, 0.75, 1.25, 1.5],
         Control_Var    = Control_Var,
-        scaler_y       = Yscaler,        # ← unbedingt übergeben!
-        bg_indices     = bg_indices,      # optional
-        horizon_index  = -1,              # letzter Forecast-Schritt
+        scaler_y       = Yscaler,        
+        bg_indices     = bg_indices,  #nutzt das nicht    
+        horizon_index  = -1,              
         max_cols       = 2
     )
     grid_counterfactual_plots_pct(
@@ -241,7 +241,7 @@ for feature in feature_names:
         bg_indices=bg_indices
     )
     
-    """
+    
     grid_cf_unscaled_direct(
         ML_DATA        = ML_DATA,
         model          = model,
@@ -255,29 +255,6 @@ for feature in feature_names:
     )
 
 
-
-    global_input_scaling_sensitivity(
-    ML_DATA        = ML_DATA,
-    model          = model,
-    factors        = [0.50, 0.75, 1.25, 1.50],
-    Control_Var    = Control_Var,
-    bg_indices     = bg_indices,               # optional: dein Subset
-    horizon_index  = Control_Var['H'] - 1      # letzter Forecast-Zeitschritt
-)
-
-    grid_counterfactual_plots_all_timesteps(
-        ML_DATA=ML_DATA,
-        model=model,
-        feature_names=feature_names,
-        feature=feature,
-        change_factors=[0.5, 0.75, 1.25, 1.5],
-        Control_Var=Control_Var,
-        bg_indices=bg_indices,
-        horizon_index=-1,   # Mittelwert über H oder z.B. 0…H-1
-        max_cols=2
-    )
-    """
-"""
     cf_scatter_percent(
         ML_DATA=ML_DATA,
         model=model,
@@ -290,18 +267,9 @@ for feature in feature_names:
         jitter=0.3
     )
 
-    scatter_cf_grid(ML_DATA=ML_DATA,
-        model=model,
-        feature_names=feature_names,
-        feature=feature,
-        change_factors=[0.5, 0.75, 1.25, 1.5],
-        Control_Var=Control_Var,
-                    timestep=-1,
-                    min_baseline=1e-3,
-                    bg_indices=bg_indices,
-                    max_cols=2)
 
-"""
+
+
 """
 
 train_sax, test_sax = generate_sax_for_dataset(
