@@ -36,6 +36,7 @@ from keras.layers import Flatten
 from keras.layers import Conv1D
 from keras.layers import MaxPooling1D
 from keras.models import load_model
+import tensorflow as tf 
 
 from CoolProp.HumidAirProp import HAPropsSI
 import sys
@@ -762,6 +763,12 @@ def PreProcessDataset(data, control):
     print(f"✅ Scaler gespeichert unter:\n  {x_scaler_path}\n  {y_scaler_path}")
     return ML_DATA, Scaler
 
+
+def last_step_mse(y_true, y_pred):
+    """MSE nur für die letzte Horizon‑Spalte (t = H‑1)."""
+    return tf.reduce_mean(tf.square(y_true[:, -1] - y_pred[:, -1]))
+
+
 def series_to_forecast(data, n_in, n_out, dropnan=True):
     """
     A function that will split the time series to input and output for training 
@@ -850,12 +857,13 @@ def PrepareMLmodel(control, ml_data):
             elif control['MLtype'] == 'CNN_LSTM':
                 ML, ANN_training = train_CNN_LSTM(ml_data, control)
             print("...Done")
-            
+
             mltype = control['MLtype']
             #Plot the train vs validation loss and save the Figure
             fig = plt.figure()
             plt.plot(ANN_training.history[ "loss" ])
             plt.plot(ANN_training.history[ "val_loss" ])
+            plt.ylim(0.00, 0.18)
             plt.grid()
             plt.title(f"Model Trainings- vs. Validierungsverlust ({mltype})")
             plt.ylabel( "Loss" )
@@ -864,6 +872,21 @@ def PrepareMLmodel(control, ml_data):
             model_folder = f"./{control['MLtype']}"
             os.makedirs(model_folder, exist_ok=True)
             plt.savefig(model_folder+'/Training_Evaluation_' + control['MLtype'], dpi=500)
+
+            # zusätzlicher Plot NUR für den letzten Horizont
+            fig_last = plt.figure()
+            plt.plot(ANN_training.history['last_step_mse'],     label='Train')
+            plt.plot(ANN_training.history['val_last_step_mse'], label='Val')
+            plt.ylim(0.00, 0.18)
+            plt.grid()
+            plt.title(f"Model Trainings- vs. Validierungsverlust t = 9 – {control['MLtype']}")
+            plt.ylabel("Loss")
+            plt.xlabel("Epoch")
+            plt.legend([ "Train" , "Validation"], loc= "upper right" )
+            plt.savefig(model_folder + '/Training_Evaluation_last_' + control['MLtype'],
+                        dpi=500)
+            plt.close(fig_last)
+
 
         if control['trainVSimport'] and control['saveMLmodel']:
             if control['MLtype'] in ['RF', "SVM"]:
@@ -886,7 +909,10 @@ def PrepareMLmodel(control, ml_data):
         elif control['MLtype'] in ["LSTM", "CNN", "CNN_LSTM"]: 
             filename = filename + ".h5"
             print("Importing " + filename + "...")
-            ML=load_model(filename)
+            ML = load_model(
+                filename,
+                custom_objects={'last_step_mse': last_step_mse}
+            )
         print("...Done\n")
     
     print(f"Prepared model: {ML}")
@@ -974,7 +1000,10 @@ def train_LSTM(data, control):
                 ML.add(Dense(control['LSTM']['Dense'][1], activation = 'relu'))
     ML.add(Dense(hor)) #this is the output layer
     ### mean-absolute-error (MSAE) loss function & Adam version of stochastic gradient descent
-    ML.compile(loss=control["LSTM"]["LossFun"], optimizer=control["LSTM"]["Optimizer"]) #, metrics=['mse', 'mae', 'mape', 'cosine']
+    ML.compile(loss=control["LSTM"]["LossFun"],
+           optimizer=control["LSTM"]["Optimizer"],
+           metrics=[last_step_mse])           
+
     ML.summary()
     
     
@@ -1026,7 +1055,9 @@ def train_CNN(data, control):
                 ML.add(Dense(control['CNN']['Dense'][1], activation = 'relu'))
     ML.add(Flatten())
     ML.add(Dense(hor, activation = control["CNN"]["ActFun"]))
-    ML.compile(loss=control["CNN"]["LossFun"], optimizer=control["CNN"]["Optimizer"]) #, metrics=['mse', 'mae', 'mape', 'cosine']
+    ML.compile(loss=control["CNN"]["LossFun"],
+           optimizer=control["CNN"]["Optimizer"],
+           metrics=[last_step_mse])         
     ML.summary()
     
     
@@ -1109,7 +1140,9 @@ def train_CNN_LSTM(data, control):
     ML.add(KerasLSTM(control["CNN_LSTM"]["Neurons"][1], activation = control["CNN_LSTM"]["LSTMActFun"], return_sequences=False)) #LSTM layers
     
     ML.add(Dense(hor, activation = 'sigmoid')) #control["CNN_LSTM"]["LSTMActFun"]))
-    ML.compile(loss=control["CNN_LSTM"]["LossFun"], optimizer=control["CNN_LSTM"]["Optimizer"]) #, metrics=['mse', 'mae', 'mape', 'cosine']
+    ML.compile(loss=control["CNN_LSTM"]["LossFun"],
+           optimizer=control["CNN_LSTM"]["Optimizer"],
+           metrics=[last_step_mse])         
     ML.summary()
     
     ANN_training = ML.fit(train_data, train_target,
@@ -1124,166 +1157,152 @@ def train_CNN_LSTM(data, control):
     return ML, ANN_training,
 
 
+# ------------------------------------------------------------------
+# 1)  TestMLmodel  (unverändert)
+# ------------------------------------------------------------------
 def TestMLmodel(control, data, ml, scaler):
     """
     Takes DATA and ML_DATA to test the trained model in the testing set
-
-    Parameters
-    ----------
-    control : dict
-        Control_Var
-    data : DataFrame
-        SOLETE dataset
-    ml : trained ML model
-        ML_DATA, the sets cointaining training, validation and testing
-    scaler : dict
-        if an scaler has been applied it is neccesary to invert it aftewards
-
-    Returns
-    -------
-    Results : dict of dataframe
-        Includes different dataframes:
-            -Forecasted: predicted values
-            -Observed: measured values (true ones)
-            -Persistence: benchmark forecasting method, naive persistence
-            -Persistence24: #Variant of persistence using the 24 hours previous value instead of latest available value
-
+    …
     """
-    
-    print("Testing " + control['MLtype'] + " This can take a while...")    
+    print("Testing " + control['MLtype'] + " This can take a while...")
 
     if control['MLtype'] in ['RF', "SVM"]:
-        predictions=ml.predict(data['X_TEST'])
-        persistence = generate_persistence(meas=data["X_TEST"][:,data["xcols"].index(control["IntrinsicFeature"]+"_(t)"),],
-                                           hor=control['H'])
-            
-    elif control['MLtype'] in ["LSTM", "CNN", "CNN_LSTM"]:        
         predictions = ml.predict(data['X_TEST'])
-        persistence = generate_persistence(meas=data["X_TEST"][:,-1,data["xcols"].index(control["IntrinsicFeature"])],
-                                           hor=control['H'])
-    
+        persistence = generate_persistence(
+            meas=data["X_TEST"][:, data["xcols"].index(control["IntrinsicFeature"]+"_(t)"),],
+            hor=control['H'])
+    elif control['MLtype'] in ["LSTM", "CNN", "CNN_LSTM"]:
+        predictions = ml.predict(data['X_TEST'])
+        persistence = generate_persistence(
+            meas=data["X_TEST"][:, -1, data["xcols"].index(control["IntrinsicFeature"])],
+            hor=control['H'])
+
     print("...Done!\n")
-    
-    
-    
+
     print("Building Results dictionary of Dataframes...")
-    #here we undo the scaler transformation to facilitate comparing the results with the orignal dataset
-    Results={
-        "Forecasted": pd.DataFrame(scaler['Y_data'].inverse_transform(predictions)), 
-        "Observed": pd.DataFrame(scaler['Y_data'].inverse_transform(data["Y_TEST"].reshape(predictions.shape))),
+    Results = {
+        "Forecasted":  pd.DataFrame(scaler['Y_data'].inverse_transform(predictions)),
+        "Observed":    pd.DataFrame(scaler['Y_data'].inverse_transform(data["Y_TEST"].reshape(predictions.shape))),
         "Persistence": pd.DataFrame(scaler['Y_data'].inverse_transform(persistence)),
-        #"Persistence24": #Variant of persistence with 24 hours previous instead of latest available value #TODO
-        }
-        
-    print("...Done\n")
-    
-    #Save the results
+    }
+
+    # ---------- keine weitere Änderung nötig ----------
+
     filename = "Results_" + control['MLtype'] + ".h5"
     print("Saving Results as: ", filename)
-    
-    i=0 #counter to check first iteration
+
+    i = 0
     for key in Results.keys():
-        if i == 0:
-            Results[key].to_hdf(filename, index = True, mode= 'w', key = key)
-            i=i+1
-        else:
-            Results[key].to_hdf(filename, index = True, mode= 'a', key = key)
-        
+        mode = 'w' if i == 0 else 'a'
+        Results[key].to_hdf(filename, index=True, mode=mode, key=key)
+        i += 1
     print("...Done\n")
-    
     return Results
 
-def generate_persistence(meas, hor,):
+
+# ------------------------------------------------------------------
+# 2)  generate_persistence  (unverändert)
+# ------------------------------------------------------------------
+def generate_persistence(meas, hor):
     """
     Short function that creates the naive persistance forecasters
-
-    Parameters
-    ----------
-    meas : numpy array
-        True values, observations to be repeated
-    hor : int
-        Horizon length in number of samples
-
-    Returns
-    -------
-    df : pd.DataFrame
-        DataFrame containing the naive Persistence forecaster
-
+    …
     """
-    
-    meas = meas.reshape(len(meas),1) #it is neccessary to reshape otherwise 
-    #it doesnt allow to concatenate on the columns axis
+    meas = meas.reshape(len(meas), 1)
     df = meas.copy()
-    for i in range(1, hor): #it starts in 1 because it has the first copy already inside
+    for i in range(1, hor):
         df = np.concatenate((df, meas), axis=1)
-    
     return df
 
 
+# ------------------------------------------------------------------
+# 3)  post_process  (nur minimal ergänzt)
+# ------------------------------------------------------------------
 def post_process(control, RESULTS):
     """
-    Computes errors and plots RMSE.
-
-    Parameters
-    ----------
-    control : dict
-        Control_Var
-    RESULTS : dict of DataFrames
-        The dict containing Forecasted, Observed, and Persistence dataframes
-
-    Returns
-    -------
-    analysis : dict of DataFrame
-        Contains the results in terms of MAE, MSE, and RMSE per horizon sample, but also the residual
-
+    Computes MAE, MSE, RMSE and plots them – inklusive Kennzahlen‑Box
+    und Balkendiagramm für den letzten Horizont.
     """
-    
-    print("Post-processing results...")
-    print("    -Computing errors:")
-    
-    residual=RESULTS["Observed"] - RESULTS["Forecasted"] 
-    
-    #raw values gives us the value per horizon time step
-    mae = pd.DataFrame(mean_absolute_error(RESULTS["Observed"], RESULTS["Forecasted"], multioutput='raw_values'), columns=["Forecaster"]) 
-    rmse = pd.DataFrame(mean_squared_error(RESULTS["Observed"], RESULTS["Forecasted"], squared=False, multioutput='raw_values'), columns=["Forecaster"])
-    mse = pd.DataFrame(mean_squared_error(RESULTS["Observed"], RESULTS["Forecasted"], squared=True, multioutput='raw_values'), columns=["Forecaster"])
+    print("Post‑processing results…")
+    residual = RESULTS["Observed"] - RESULTS["Forecasted"]
 
-    for error in ["Persistence"]: #["Persistence", "Persistence24"]
-        rmse[error] = mean_squared_error(RESULTS["Observed"], RESULTS[error], squared=False, multioutput='raw_values')
-        mae[error] = mean_absolute_error(RESULTS["Observed"], RESULTS[error], multioutput='raw_values')
-        mse[error] = mean_squared_error(RESULTS["Observed"], RESULTS[error], squared=True, multioutput='raw_values')
-    
-        
-    #these enable the autoscaling of the plot
-    ymin = min([rmse.min().min()*1.1, 0])
-    ymax = max([rmse.max().max()*1.1, 0])
-        
-    fig = plt.figure()
-    plt.plot(rmse)
-    plt.grid()
-    plt.xlim((rmse.index[0], rmse.index[-1]))
-    plt.ylim(ymin, ymax) 
-    plt.ylabel( "RMSE" )
-    plt.xlabel( "Time Horizon" )
+    # Fehler je Horizont
+    mae  = pd.DataFrame(mean_absolute_error(RESULTS["Observed"], RESULTS["Forecasted"],
+                                            multioutput="raw_values"),
+                        columns=["Forecaster"])
+    rmse = pd.DataFrame(mean_squared_error(RESULTS["Observed"], RESULTS["Forecasted"],
+                                           squared=False, multioutput="raw_values"),
+                        columns=["Forecaster"])
+    mse  = pd.DataFrame(mean_squared_error(RESULTS["Observed"], RESULTS["Forecasted"],
+                                           squared=True,  multioutput="raw_values"),
+                        columns=["Forecaster"])
+
+    for bench in ["Persistence"]:
+        rmse[bench] = mean_squared_error(RESULTS["Observed"], RESULTS[bench],
+                                         squared=False, multioutput="raw_values")
+        mae[bench]  = mean_absolute_error(RESULTS["Observed"], RESULTS[bench],
+                                          multioutput="raw_values")
+        mse[bench]  = mean_squared_error(RESULTS["Observed"], RESULTS[bench],
+                                          squared=True,  multioutput="raw_values")
+
+    # Kennzahlen
+    rmse_av = rmse.mean().iloc[0]
+    mae_av  = mae.mean().iloc[0]
+    mse_av  = mse.mean().iloc[0]
+
+    last_h   = rmse.index[-1]
+    rmse_end = rmse.iloc[last_h, 0]
+    mae_end  = mae.iloc[last_h, 0]
+    mse_end  = mse.iloc[last_h, 0]
+
+    # -----------------------------------------------------------------
+    # LINIENPLOT + INFO‑BOX
+    # -----------------------------------------------------------------
+    fig, ax = plt.subplots()
+    ax.plot(rmse)
+    ax.grid(True, linestyle=":")
+    ax.set_xlim(rmse.index[0], rmse.index[-1])
+    ax.set_ylim(0, rmse.max().max()*1.1)
+    ax.set_ylabel("RMSE")
+    ax.set_xlabel("Time Horizon")
+
+    info = (f"RMSE  Ø {rmse_av:.3f}  |  t={last_h}: {rmse_end:.3f}\n"
+            f"MAE   Ø {mae_av:.3f}  |  t={last_h}: {mae_end:.3f}\n"
+            f"MSE   Ø {mse_av:.3f}  |  t={last_h}: {mse_end:.3f}")
+    ax.text(0.98, 0.98, info, transform=ax.transAxes, 
+            fontsize=9, va="top", ha="right",
+            bbox=dict(boxstyle="round", fc="white", alpha=0.8, lw=0))
+
     MLtype = control["MLtype"]
-    plt.title(f"{MLtype}: RMSE = {round(rmse.mean().iloc[0], 3)}  MAE = {round(mae.mean().iloc[0], 3)}  MSE = {round(mse.mean().iloc[0], 3)}")
+    ax.set_title(MLtype)
+    ax.legend(rmse.columns)
 
-    plt.legend(rmse.columns)
-    
-    filename = control["MLtype"]+"/"+"RMSE_" + control["MLtype"]
-    print("    -Saving RMSE plot as: ", filename)
-    plt.savefig(filename, dpi=500)
-    print("...Done")
-    
-    analysis ={'_description_' : 'Holds different statistics related to prediction accuracy',
-            'RMSE' : rmse, #root mean squared error
-            'MAE' : mae, #mean absolute error     
-            'MSE' : mse, #mean squared error
-            'Residual': residual, #residual error
-            }
-    
-    print("\n\nThe End!")
-    
+    main_fname = f"{MLtype}/RMSE_{MLtype}.png"
+    fig.savefig(main_fname, dpi=500)
+    plt.close(fig)
+
+    # -----------------------------------------------------------------
+    # BALKENPLOT FÜR LETZTEN HORIZONT
+    # -----------------------------------------------------------------
+    fig = plt.figure()
+    rmse.loc[last_h].plot.bar()
+    plt.ylabel("RMSE")
+    plt.title(f"{MLtype}: RMSE Horizon t={last_h}")
+    fname_last = f"{MLtype}/RMSE_last_t{last_h}.png"
+    plt.tight_layout()
+    plt.savefig(fname_last, dpi=500)
+    plt.close(fig)
+
+    print(f"Plots saved:\n  {main_fname}\n  {fname_last}")
+
+    analysis = {
+        "_description_": "Holds different statistics related to prediction accuracy",
+        "RMSE": rmse,
+        "MAE":  mae,
+        "MSE":  mse,
+        "Residual": residual,
+    }
     return analysis
 
 
