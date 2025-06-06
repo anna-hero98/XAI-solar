@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import shap
 import numpy as np
 import random
@@ -15,10 +17,13 @@ from matplotlib.ticker import FuncFormatter
 import math
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 import re
-
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 from Functions import import_SOLETE_data, import_PV_WT_data, PreProcessDataset  
 from Functions import PrepareMLmodel, TestMLmodel, post_process
-
+import pandas as pd
 import numpy as np
 from scipy.stats import norm
 from matplotlib.lines import Line2D
@@ -84,7 +89,7 @@ def get_explanations_2D(
     ml_type = Control_Var["MLtype"]                
     out_dir = f"./{ml_type}"
     os.makedirs(out_dir, exist_ok=True)
-
+    feature_names = [fn.replace("1", "/") for fn in feature_names]
     # Fixe x‑Achsen‑Grenzen, damit mehrere Plots visuell vergleichbar sind
     X_LIM = (-0.27, 0.27)
 
@@ -165,7 +170,7 @@ def get_explanations_2D(
     # --------------------------------------------------------------------- #
     for h in horizon_steps:
         if not 0 <= h < H:
-            print(f"[Skip] Forecast‑Index {h} existiert nicht (H={H})")
+            print(f"[Skip] Forecast‑Index {h+1} existiert nicht (H={h+1})")
             continue
 
         shap_h = shap_arr[..., h]                  # (N, T_in, F)
@@ -179,8 +184,8 @@ def get_explanations_2D(
                           feature_names=feature_names,
                           plot_type="dot", sort=False, show=False)
         plt.xlim(*X_LIM)
-        plt.title(f"{ml_type} - SHAP  Prognosehorizont t={h}  (Eingabeschritte: {list(input_steps_sel)})")
-        f_out = os.path.join(out_dir, f"{ml_type}_Shap_t{h}_Input_{input_steps_sel}.png")
+        plt.title(f"{ml_type} - SHAP für aggregierte Eingabeschritte und Vorhersagehorizont h = {h+1}",fontsize=16,pad=14)
+        f_out = os.path.join(out_dir, f"{ml_type}_Shap_t{h+1}_Input_{input_steps_sel}.png")
         fig.savefig(f_out, dpi=300, bbox_inches="tight");  plt.close(fig)
         print("✅", f_out)
         del fig
@@ -203,13 +208,12 @@ def get_explanations_2D(
 
             # ---------- Titel & Dateiname ----------------------------------
             titel = (
-                f"{ml_type} - SHAP Prognosehorizont t ={h}  |  "
-                f"Eingabeschritt t = {t}"
+                f"{ml_type} - SHAP für Eingabeschritt t = {t+1} und Vorhersagehorizont h = {h+1} "
             )
             plt.gca().set_title(titel, fontsize=14, pad=12)
 
             f_t = os.path.join(
-                out_dir, f"{ml_type}_Shap_t{h}_input-step{t:02d}.png"
+                out_dir, f"{ml_type}_Shap_t{h+1}_input-step{t:02d}.png"
             )
             plt.tight_layout()
             plt.savefig(f_t, dpi=300, bbox_inches="tight")
@@ -268,7 +272,6 @@ import os
 import re
 import numpy as np
 import matplotlib.pyplot as plt
-from functools import partial
 from lime.lime_tabular import LimeTabularExplainer
 
 def generate_lime_explanations(
@@ -277,111 +280,127 @@ def generate_lime_explanations(
     X_test,
     feature_names,
     ml_type,
-    lime_predict_fn,
     selected_indices=None,
     selected_indices_file_path='selected_indices.txt',
     num_instances=5,
-    seed=42
+    seed=42,
+    horizon_step=None,      # Optional: Index des Vorhersagehorizonts (0-basiert); None = alle Ziele
+    input_time_step=None     # Optional: Extrahiert nur Input-Features eines einzelnen Zeitpunkts (0-basiert);
 ):
     """
     Erzeugt LIME-Erklärungen und speichert jede Instanz als einzelne PNG-Datei
     mit dem Titel der Abbildung als Dateinamen.
-
-    Rückgabe
-    --------
-    used_indices : list[int]
-        Die verwendeten Testinstanz-Indizes.
     """
 
-    # Zielordner anlegen
+    import os, re, numpy as np
+    from lime.lime_tabular import LimeTabularExplainer
+    import matplotlib.pyplot as plt
+
+    # Zielordner
     out_dir = f"./{ml_type}"
     os.makedirs(out_dir, exist_ok=True)
 
-    # 3D → 2D
-    X_train_flat = X_train.reshape(X_train.shape[0], -1)
-    X_test_flat  = X_test.reshape(X_test.shape[0],  -1)
+    # Dimensionen
+    total_steps, total_feats = X_train.shape[1], X_train.shape[2]
+    feature_names = [fn.replace("1", "/") for fn in feature_names]
 
-    # Feature-Namen erweitern (jede Zeitstufe pro Ursprungsfeature)
-    lime_feature_names = [
-        f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])
-    ]
+    # Flattened Daten für LIME
+    if input_time_step is not None:
+        if not (0 <= input_time_step < total_steps):
+            raise ValueError(f"input_time_step muss zwischen 0 und {total_steps-1} liegen.")
+        X_train_flat = X_train[:, input_time_step, :]
+        X_test_flat  = X_test[:,  input_time_step, :]
+        lime_feature_names = feature_names
+    else:
+        X_train_flat = X_train.reshape(X_train.shape[0], -1)
+        X_test_flat  = X_test.reshape(X_test.shape[0],  -1)
+        lime_feature_names = [
+            f"{col}_{i}" for col in feature_names for i in range(total_steps)
+        ]
 
-    # LIME-Explainer initialisieren
+    # Initialisiere LIME
     explainer = LimeTabularExplainer(
-        training_data=X_train_flat,
-        feature_names=lime_feature_names,
-        mode='regression',
-        discretize_continuous=False
+        training_data          = X_train_flat,
+        feature_names          = lime_feature_names,
+        mode                   = 'regression',
+        discretize_continuous  = False
     )
 
-    # Zufalls- / Benutzer­indizes wählen
+    # Auswahl der Indizes
     np.random.seed(seed)
     if selected_indices is not None:
         used_indices = selected_indices
     else:
-        if os.path.exists(selected_indices_file_path):
-            try:
-                with open(selected_indices_file_path) as f:
-                    used_indices = [int(line.strip()) for line in f]
-            except Exception:
-                used_indices = []
+        try:
+            used_indices = list(map(int, open(selected_indices_file_path).read().splitlines()))
+        except Exception:
+            used_indices = []
         if not used_indices:
             used_indices = np.random.choice(
-                range(X_test.shape[0]), num_instances, replace=False
+                len(X_test), num_instances, replace=False
             ).tolist()
-            with open(selected_indices_file_path, 'w') as f:
-                f.write('\n'.join(map(str, used_indices)))
+            open(selected_indices_file_path, 'w').write(
+                "\n".join(map(str, used_indices))
+            )
 
-    # Schleife über ausgewählte Instanzen
+    # Erkläre jede Instanz
     for idx in used_indices:
-        test_instance = X_test_flat[idx].reshape(1, -1)
-        predict_fn = partial(lime_predict_fn, X_train=X_train, model=model)
+        base_seq = X_test[idx]
 
-        explanation = explainer.explain_instance(test_instance[0], predict_fn)
-        fig = explanation.as_pyplot_figure()
+        def predict_fn(flat_inst):
+            flat = np.atleast_2d(flat_inst)
+            n_samp = flat.shape[0]
+            if input_time_step is not None:
+                X_seq = np.repeat(base_seq[np.newaxis, :], n_samp, axis=0)
+                X_seq[:, input_time_step, :] = flat
+            else:
+                X_seq = flat.reshape(n_samp, total_steps, total_feats)
+            preds = model.predict(X_seq)
+            return preds[:, horizon_step] if horizon_step is not None else preds[:, 0]
 
-        title = f"{ml_type} LIME Erklärung für Testinstanz {idx}"
-        fig.suptitle(title, fontsize=14)
+        expl = explainer.explain_instance(
+            X_test_flat[idx], predict_fn, num_features=10
+        )
+        fig = expl.as_pyplot_figure()
 
-        # Gültigen Dateinamen aus Überschrift ableiten
-        safe_title = re.sub(r'[^\w\-\. ]', '_', title).replace(' ', '_')
-        file_path = os.path.join(out_dir, f"{safe_title}.png")
+        # 1) LIME-Suptitle entfernen
+        if fig._suptitle is not None:
+            fig._suptitle.remove()
 
-        fig.savefig(file_path, bbox_inches='tight', dpi=300)
+        # 2) Achsentitel "Local explanation" löschen
+        for ax in fig.get_axes():
+            if ax.get_title().strip().lower().startswith("local explanation"):
+                ax.set_title("")
+
+        # 3) x-Achse clippen (korrekt!)
+        for ax in fig.axes:
+            ax.set_xlim(-0.1, 0.1)
+
+        # Titel und Dateiname
+        parts = [ml_type, f" - LIME-Diagramm für Testinstanz {idx} "]
+        if input_time_step is not None:
+            parts.append(f"für Eingabeschritt t = {input_time_step+1} und ")
+        if horizon_step is not None:
+            parts.append(f"Vorhersagehorizont h = {horizon_step+1}")
+        else:
+            parts.append("(voll aggregiert)")
+        title = "".join(parts)
+
+        # 4) Eigenen Titel als Figure-Text mit exakt 16 pt
+        fig.text(
+            0.5, 0.98, title,
+            ha='center', va='top',
+            fontsize=11
+        )
+        fig.subplots_adjust(top=0.90)
+
+        # 5) Speichern und Schließen
+        fname = re.sub(r'[^\w\-\.]', '_', "_".join(parts)) + '.png'
+        fig.savefig(os.path.join(out_dir, fname), bbox_inches='tight', dpi=300)
         plt.close(fig)
 
-    print(f"LIME-Einzelbilder liegen in '{out_dir}'")
+    print(f"✅ LIME-Erklärungen in '{out_dir}' erstellt für Indizes: {used_indices}")
     return used_indices
-
-
-
-
-
-###############################################################################
-# 1) Generische Counterfactual‑Routine                                        #
-###############################################################################
-import numpy as np
-from scipy.optimize import minimize
-
-import numpy as np
-from scipy.optimize import minimize
-
-# Beispiel mit der Alibi-Bibliothek für Kontrafaktische Erklärungen (Zeitreihen)
-# Installation: pip install alibi
-
-import numpy as np
-import tensorflow as tf
-from alibi.explainers import Counterfactual
-# Wrapper-Funktion für Zeitreihen-Kontrafaktoren mit Alibi
-# Installation: pip install alibi
-
-import numpy as np
-import tensorflow as tf
-from alibi.explainers import Counterfactual
-import matplotlib.pyplot as plt
-
-# Wrapper-Funktion für Zeitreihen-Kontrafaktoren mit Alibi
-# Installation: pip install alibi
 
 import numpy as np
 import tensorflow as tf
@@ -624,7 +643,7 @@ def compute_ts_counterfactual(
     # Zuerst Counterfactual, dann Original oben drüber, damit beides sichtbar ist
     plt.plot(y_cf, label='Counterfactual', linestyle='--', marker='x')
     plt.plot(y_orig, label='Original', linestyle='-', marker='o')
-    plt.title(f'Vorhersage: Original vs. CF für {feature} (idx={idx})')
+    plt.title(f'Vorhersage: Original vs. CF für {feature} (idx={idx})',fontsize=16,pad=14)
     plt.xlabel('Zeitschritt')
     plt.ylabel('Vorhersage')
     plt.legend()
@@ -718,7 +737,56 @@ def generate_ts_counterfactual(
         x_cf[:, feature_idx] = orig + best[0]
     return x_cf
 
+#from dice_ml.exceptions import UserConfigValidationException
+def safe_generate_cfs(
+                     
+                      horizon,
+                      n_cfs=2,
+                      model=None,          ML_DATA        = None,
+                             feature_names=None,   
+                                 idx=None,
+                                     total_CFs=None,desired_range=None, method="random",
+                                             # ← NEU
+                                             # ← NEU
+                      x_scaler=None,
+                      y_scaler=None):
+    """
+    Liefert ein Dict mit
+      • 'found'      : True/False
+      • 'y_orig'     : unskalierter Ausgangswert (t+h)
+      • 'y_cfs'      : Liste unskalierter CF-Werte (evtl. leer)
+      • 'best_value' : größter verfügbarer Wert (CF oder Original)
 
+    Bricht NICHT mit Exception ab, wenn keine CFs gefunden werden.
+    """
+    try:
+        res = compute_ts_counterfactual_dice(
+            model          = model,
+            ML_DATA        = ML_DATA,
+            feature_names  = feature_names,
+            idx            = sample_id,
+            total_CFs      = n_cfs,
+            desired_range  = desired_range,
+            horizon        = horizon,
+            x_scaler       = x_scaler,
+            y_scaler       = y_scaler
+        )
+        best_val = max(res["y_cfs"]) if res["y_cfs"] else res["y_orig"]
+        return {"found": True,
+                "y_orig": res["y_orig"],
+                "y_cfs":  res["y_cfs"],
+                "best_value": best_val,
+                "cf_seq":   res["cf_examples_unscaled"]}
+    except UserConfigValidationException:
+        # Kein CF – wir geben wenigstens den Originalwert zurück
+        orig_scaled = model.predict(ML_DATA["X_TEST"][sample_id:sample_id+1]).ravel()[horizon]
+        y_orig = (float(y_scaler.inverse_transform([[orig_scaled]])[0,0])
+                  if y_scaler is not None else float(orig_scaled))
+        return {"found": False,
+                "y_orig": y_orig,
+                "y_cfs":  [],
+                "best_value": y_orig,
+                "cf_seq":   None}
 def compute_ts_counterfactual(
     model,
     ML_DATA: dict,
@@ -753,7 +821,8 @@ def compute_ts_counterfactual(
     plt.figure(figsize=(6,4))
     plt.plot(y_cf, '--x', label='Counterfactual')
     plt.plot(y_orig, '-o', label='Original')
-    plt.title(f'Vorhersage: Original vs. CF für {feature} (idx={idx})')
+    plt.title(f'Vorhersage: Original vs. CF für {feature} (idx={idx})'
+    ,fontsize=16,pad=14)
     plt.xlabel('Zeitschritt')
     plt.ylabel('Vorhersage')
     plt.legend()
@@ -774,192 +843,351 @@ def compute_ts_counterfactual(
 
     return {'x_cf': x_cf, 'y_orig': y_orig, 'y_cf': y_cf}
 
-
 def compute_ts_counterfactual_dice(
     model,
     ML_DATA: dict,
     feature_names: list,
-    feature: str,
     idx: int,
+    desired_range: tuple,
+
     total_CFs: int = 1,
-    desired_range: tuple = (0.5, 0.5),
-    method: str = 'random',
-    features_to_vary: list = None,
-    horizon: int = -1
+    method: str = "random",
+    features_to_vary: list | None = None,
+    horizon: int = -1,
+    x_scaler=None,
+    y_scaler=None,
+
+    feature: str | None = None
 ) -> dict:
     """
-    Berechnet und speichert zeitserielle Gegenfaktoren mit DiCE für einen spezifischen Forecast-Horizont.
+    Erzeugt zeitserielle Counterfactual-Erklärungen (DiCE) für ein einzelnes
+    Test-Sample.
 
-    Plots werden im Ordner basierend auf dem Modellnamen angelegt.
+    Parameter
+    ---------
+    model : sklearn-kompatibles Prognosemodell
+    ML_DATA : dict
+        Muss mindestens 'X_TEST' enthalten (Shape: [n, T, F]).
+    feature_names : list[str]
+        Namen der F Features in exakt derselben Reihenfolge wie im Modell.
+    idx : int
+        Index des Test-Samples in X_TEST.
+    total_CFs : int, default 1
+        Anzahl gewünschter Counterfactuals.
+    desired_range : tuple[float, float], default (0.5, 0.5)
+        Zielwert-Intervall **in Originaleinheiten**; wird intern skaliert,
+        sofern `y_scaler` angegeben ist.
+    method : str, default "random"
+        DiCE-Erzeugungsmethode.
+    features_to_vary : list[str] | None
+        Liste der variierbaren Spaltennamen im Flatten-Format.  Wird
+        `None` übergeben, darf DiCE alle Features verändern.
+    horizon : int, default −1
+        Vorhersagehorizont (0-basiert).  Negative Werte zählen rückwärts
+        vom letzten Zeitschritt.
+    x_scaler, y_scaler
+        Instanzen von sklearn-Skalierern oder `None`.
+    feature : str | None
+        Name eines Features, dessen Verlauf in Overlays geplottet wird.
+        Ist `None`, wird automatisch `feature_names[0]` gewählt.
+
+    Rückgabe
+    --------
+    dict mit u. a.
+        cf_examples_unscaled : list[np.ndarray]  # [(T, F), …]
+        y_orig                : float           # unskaliert
+        y_cfs                 : list[float]     # unskaliert
+        … weitere skalierte Varianten
     """
-    import os
-    import pandas as pd
-    import dice_ml
-    import numpy as np
-    import matplotlib.pyplot as plt
 
-    # Erstelle Ordner nach Modell-Typ
-    ml_type = getattr(model, 'name', model.__class__.__name__)
+    import os
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import dice_ml
+    from itertools import combinations
+
+    # ───────────────────────────────────────────────────────────────
+    # 0 | allgemeine Vorbereitungen
+    # ───────────────────────────────────────────────────────────────
+    if feature is None:
+        feature = feature_names[0]
+
+    ml_type = getattr(model, "name", model.__class__.__name__)
     os.makedirs(ml_type, exist_ok=True)
 
-    # 1. Originaldaten & Vorhersage
-    X = ML_DATA['X_TEST']
-    x_seq = X[idx:idx+1]
-    preds = model.predict(x_seq).ravel()
-    H = preds.shape[0]
+    # ───────────────────────────────────────────────────────────────
+    # 1 | Ausgangssequenz und skalierte Vorhersage
+    # ───────────────────────────────────────────────────────────────
+    X_test = ML_DATA["X_TEST"]
+    x_seq = X_test[idx : idx + 1]                    # (1, T, F)
+    preds_scaled = model.predict(x_seq).ravel()      # (H,)
+    H = preds_scaled.shape[0]
+
     h = horizon if horizon >= 0 else H + horizon
-    h = max(0, min(h, H-1))
-    y_orig = preds[h]
+    h = max(0, min(h, H - 1))
+    y_orig_scaled = float(preds_scaled[h])
 
-    # 2. Flatten für DiCE
-    T, F = x_seq.shape[1], x_seq.shape[2]
-    flat = x_seq.reshape(1, T*F)
-    col_names = [f"{fn}_{t}" for t in range(T) for fn in feature_names]
-    df = pd.DataFrame(flat, columns=col_names)
-    df['target'] = y_orig
-
-    # 3. DiCE DataInterface
-    data_dice = dice_ml.Data(
-        dataframe=df,
-        continuous_features=col_names,
-        outcome_name='target'
+    # unskalierter Ausgangswert
+    y_orig = (
+        float(y_scaler.inverse_transform([[y_orig_scaled]])[0, 0])
+        if y_scaler is not None
+        else y_orig_scaled
     )
 
-    # 4. Wrapper für flache Predict-Funktion
-    def predict_fn_sklearn(X_flat):
-        arr = X_flat.values if hasattr(X_flat, 'values') else np.array(X_flat)
-        Xr = arr.reshape(-1, T, F)
-        p = model.predict(Xr).ravel()
-        return np.array([p[h] for _ in range(Xr.shape[0])])
+    # ───────────────────────────────────────────────────────────────
+    # 2 | Flatten & DataFrame für DiCE
+    # ───────────────────────────────────────────────────────────────
+    T, F = x_seq.shape[1], x_seq.shape[2]
+    flat = x_seq.reshape(1, T * F)
+    col_names = [f"{fn}_{t + 1}" for t in range(T) for fn in feature_names]
 
-    class ModelWrapper:
-        def __init__(self, func): self.func = func
-        def predict(self, X_flat): return self.func(X_flat)
+    df = pd.DataFrame(flat, columns=col_names)
+    df["target"] = y_orig_scaled
+
+    # ───────────────────────────────────────────────────────────────
+    # 3 | DiCE DataInterface & Modell-Wrapper
+    # ───────────────────────────────────────────────────────────────
+    data_dice = dice_ml.Data(
+        dataframe=df, continuous_features=col_names, outcome_name="target"
+    )
+
+    def _predict_flat(X_flat):
+        arr = X_flat.values if hasattr(X_flat, "values") else np.array(X_flat)
+        Xr = arr.reshape(-1, T, F)
+        out = model.predict(Xr).ravel()
+        return np.array([out[h] for _ in range(Xr.shape[0])])
+
+    class _Wrapper:
+        def __init__(self, fn): self.fn = fn
+        def predict(self, Xf): return self.fn(Xf)
 
     model_dice = dice_ml.Model(
-        model=ModelWrapper(predict_fn_sklearn),
-        backend='sklearn',
-        model_type='regressor'
+        model=_Wrapper(_predict_flat),
+        backend="sklearn",
+        model_type="regressor"
     )
     exp = dice_ml.Dice(data_dice, model_dice, method=method)
 
-    # 5. Query-Instance
+    # ───────────────────────────────────────────────────────────────
+    # 4 | gewünschter Zielbereich → Skalierungsraum
+    # ───────────────────────────────────────────────────────────────
+    if y_scaler is not None:
+        desired_range_scaled = tuple(
+            y_scaler.transform(np.array(desired_range).reshape(-1, 1)).ravel()
+        )
+    else:
+        desired_range_scaled = desired_range
+
+    # ───────────────────────────────────────────────────────────────
+    # 5 | Counterfactuals generieren
+    # ───────────────────────────────────────────────────────────────
     if features_to_vary is None:
         features_to_vary = col_names
+
     query_instance = df[features_to_vary].iloc[[0]]
 
-    # 6. Generate CFs
     dice_exp = exp.generate_counterfactuals(
         query_instance,
         total_CFs=total_CFs,
-        desired_range=desired_range,
-        features_to_vary=features_to_vary
+        desired_range=desired_range_scaled,
+        features_to_vary=features_to_vary, 
+        sample_size      = 200000
     )
 
-    # 7. Extract CF examples robust
-    cfs_obj = dice_exp.cf_examples_list[0]
-    # Versuche direkt
-    try:
-        cfs_df = cfs_obj.final_cfs_df
-    except Exception:
-        # Introspektion aller DataFrame-Attribute
-        df_found = None
-        for attr in dir(cfs_obj):
-            val = getattr(cfs_obj, attr)
-            if isinstance(val, pd.DataFrame):
-                df_found = val
+    # DataFrame mit CFs robust extrahieren
+    cf_df = getattr(dice_exp.cf_examples_list[0], "final_cfs_df", None)
+    if cf_df is None:
+        # Fallback: erstes DataFrame-Attribut suchen
+        for a in dir(dice_exp.cf_examples_list[0]):
+            obj = getattr(dice_exp.cf_examples_list[0], a)
+            if isinstance(obj, pd.DataFrame):
+                cf_df = obj
                 break
-        if df_found is None:
-            raise ValueError(f"Keine DataFrame-Attribute im CF-Objekt gefunden. Verfügbare: {[a for a in dir(cfs_obj) if not a.startswith('_') ]}")
-        cfs_df = df_found
+        if cf_df is None:
+            raise RuntimeError("Counterfactual-DataFrame nicht gefunden.")
 
-    cf_flat = cfs_df[features_to_vary].values
-    cf_examples = [cf.reshape(T, F) for cf in cf_flat]
-    y_cfs = [model.predict(cf.reshape(1, T, F)).ravel()[h] for cf in cf_examples]
+    # ───────────────────────────────────────────────────────────────
+    # 6 | skalierte CF-Sequenzen & Vorhersagen
+    # ───────────────────────────────────────────────────────────────
+    cf_flat = cf_df[features_to_vary].values
+    cf_examples_scaled = [cf.reshape(T, F) for cf in cf_flat]
 
-    # 8. Speichern & Plots
-    # 8.1 Balkendiagramm der CF-Vorhersagen
-    plt.figure(figsize=(6,4))
-    labels = ['Original'] + [f'CF{i+1}' for i in range(len(y_cfs))]
-    values = [y_orig] + y_cfs
-    plt.bar(labels, values)
-    plt.title(f'DiCE CF-Vorhersagen (Horizon={h}) für {feature} (idx={idx})')
-    plt.ylabel('Vorhersage')
-    plt.savefig(os.path.join(ml_type, 'dice_predictions_bar.png'), dpi=300, bbox_inches='tight')
+    y_cfs_scaled = [
+        float(model.predict(cf.reshape(1, T, F)).ravel()[h])
+        for cf in cf_examples_scaled
+    ]
+
+    # Unskalierte Zielwerte
+    if y_scaler is not None:
+        y_cfs = [
+            float(y_scaler.inverse_transform([[yc]])[0, 0])
+            for yc in y_cfs_scaled
+        ]
+    else:
+        y_cfs = y_cfs_scaled
+
+            # ───────────────────────────────────────────────────────────────
+    # 6a | Werte auf Trainings-Min/Max begrenzen           ✱ NEU
+    # ───────────────────────────────────────────────────────────────
+    if x_scaler is not None:                       # nur falls ein Skaler übergeben wurde
+        # Grenzen im Originalraum bestimmen
+        if hasattr(x_scaler, "data_min_") and hasattr(x_scaler, "data_max_"):
+            orig_mins = x_scaler.data_min_
+            orig_maxs = x_scaler.data_max_
+        elif "X_TRAIN" in ML_DATA:                 # Fallback für z. B. StandardScaler
+            flat_train = ML_DATA["X_TRAIN"].reshape(-1, cf_examples_scaled[0].shape[-1])
+            orig_mins = flat_train.min(axis=0)
+            orig_maxs = flat_train.max(axis=0)
+        else:
+            raise ValueError(
+                "Feature-Grenzen konnten nicht bestimmt werden "
+                "(x_scaler ohne data_min_/data_max_ und X_TRAIN fehlt)."
+            )
+
+        # Grenzen in den skalierten Raum übertragen
+        mins_scaled = x_scaler.transform(orig_mins.reshape(1, -1)).ravel()
+        maxs_scaled = x_scaler.transform(orig_maxs.reshape(1, -1)).ravel()
+
+        # Jede CF-Sequenz hart clippen
+        cf_examples_scaled = [
+            np.clip(cf, mins_scaled, maxs_scaled) for cf in cf_examples_scaled
+        ]
+
+    # ───────────────────────────────────────────────────────────────
+    # 7 | Unskalierung der Feature-Sequenzen (für Plots)
+    # ───────────────────────────────────────────────────────────────
+    if x_scaler is not None:
+        seq_unscaled = x_scaler.inverse_transform(
+            x_seq.reshape(-1, F)
+        ).reshape(x_seq.shape)
+        cf_examples = [
+            x_scaler.inverse_transform(cf.reshape(-1, F)).reshape(T, F)
+            for cf in cf_examples_scaled
+        ]
+    else:
+        seq_unscaled = x_seq.copy()
+        cf_examples = [cf.copy() for cf in cf_examples_scaled]
+
+    # ───────────────────────────────────────────────────────────────
+    # 8 | Visualisierungen (alle unskaliert)
+    # ───────────────────────────────────────────────────────────────
+    feat_idx = feature_names.index(feature)
+
+    # 8.1 Balkendiagramm
+    plt.figure(figsize=(6, 4))
+    plt.bar(
+        ["Original"] + [f"CF{i+1}" for i in range(len(y_cfs))],
+        [y_orig] + y_cfs
+    )
+    plt.ylabel("Zielwert")
+    plt.title(f"DiCE-Vorhersagen (Horizon {h+1})")
+    plt.savefig(
+        os.path.join(ml_type, "dice_predictions_bar.png"),
+        dpi=300, bbox_inches="tight"
+    )
     plt.close()
 
     # 8.2 Zeitreihen-Overlay
-    feat_idx = feature_names.index(feature)
-    plt.figure(figsize=(8,4))
-    plt.plot(x_seq[0,:,feat_idx], '-o', color='black', label='Original')
+    plt.figure(figsize=(8, 4))
+    plt.plot(
+        seq_unscaled[0, :, feat_idx], "-o",
+        color="black", label="Original"
+    )
     for i, cf in enumerate(cf_examples):
-        plt.plot(cf[:,feat_idx], '--', label=f'CF{i+1}')
-    plt.title(f'TimeSeries Overlay: {feature}')
-    plt.xlabel('Timesteps')
+        plt.plot(cf[:, feat_idx], "--", label=f"CF{i+1}")
+    plt.xlabel("Timesteps")
+    plt.title(f"Overlay {feature}")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(os.path.join(ml_type, 'dice_timeseries_overlay.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(
+        os.path.join(ml_type, "dice_timeseries_overlay.png"),
+        dpi=300, bbox_inches="tight"
+    )
     plt.close()
 
-    # 8.3 Parallelkoordinaten-Plot
+    # 8.3 Parallel-Koordinaten
     try:
         import pandas.plotting as pd_plot
-        df_pc = pd.DataFrame([cf.reshape(-1) for cf in cf_examples] + [flat.reshape(-1)], columns=col_names)
-        df_pc['Typ'] = [f'CF{i+1}' for i in range(len(cf_examples))] + ['Original']
-        plt.figure(figsize=(10,4))
-        pd_plot.parallel_coordinates(df_pc, 'Typ')
-        plt.title('Parallel Coordinates: CF vs Original')
-        plt.savefig(os.path.join(ml_type, 'dice_parallel_coordinates.png'), dpi=300, bbox_inches='tight')
+        df_pc = pd.DataFrame(
+            [cf.reshape(-1) for cf in cf_examples] + [seq_unscaled.reshape(-1)],
+            columns=col_names
+        )
+        df_pc["Typ"] = [f"CF{i+1}" for i in range(len(cf_examples))] + ["Original"]
+        plt.figure(figsize=(10, 4))
+        pd_plot.parallel_coordinates(df_pc, "Typ")
+        plt.title("Parallel Coordinates")
+        plt.savefig(
+            os.path.join(ml_type, "dice_parallel_coordinates.png"),
+            dpi=300, bbox_inches="tight"
+        )
         plt.close()
     except Exception:
-        pass
+        pass  # fehlende Abhängigkeit oder zu viele Spalten
 
-    # 8.4 Scatter-Plot der ersten beiden Features
+    # 8.4 Scatter-Plot (erste zwei Features)
     idx_x, idx_y = 0, 1
-    ox = x_seq[0,:,idx_x].mean(); oy = x_seq[0,:,idx_y].mean()
-    plt.figure(figsize=(5,5))
-    plt.scatter(ox, oy, c='black', label='Original')
+    ox = seq_unscaled[0, :, idx_x].mean()
+    oy = seq_unscaled[0, :, idx_y].mean()
+    plt.figure(figsize=(5, 5))
+    plt.scatter(ox, oy, c="black", label="Original")
     for i, cf in enumerate(cf_examples):
-        cx = cf[:,idx_x].mean(); cy = cf[:,idx_y].mean()
-        plt.scatter(cx, cy, label=f'CF{i+1}')
-        plt.arrow(ox, oy, cx-ox, cy-oy, head_width=0.01, length_includes_head=True)
+        cx = cf[:, idx_x].mean()
+        cy = cf[:, idx_y].mean()
+        plt.scatter(cx, cy, label=f"CF{i+1}")
+        plt.arrow(ox, oy, cx - ox, cy - oy,
+                  head_width=0.02, length_includes_head=True)
     plt.xlabel(feature_names[idx_x]); plt.ylabel(feature_names[idx_y])
-    plt.title('2D Scatter CFs'); plt.legend()
-    plt.savefig(os.path.join(ml_type, 'dice_scatter2d.png'), dpi=300, bbox_inches='tight')
+    plt.title("2D Scatter CFs")
+    plt.legend()
+    plt.savefig(
+        os.path.join(ml_type, "dice_scatter2d.png"),
+        dpi=300, bbox_inches="tight"
+    )
     plt.close()
 
-    # 8.5 Heatmap der Deltas
-    deltas = np.array([cf.reshape(-1) - flat.reshape(-1) for cf in cf_examples])
-    plt.figure(figsize=(8,4))
-    plt.imshow(deltas, aspect='auto', cmap='coolwarm', interpolation='nearest')
-    plt.colorbar(label='Δ Value')
-    plt.title('Heatmap der Δs (CF vs Original)')
-    plt.savefig(os.path.join(ml_type, 'dice_heatmap_deltas.png'), dpi=300, bbox_inches='tight')
+    # 8.5 Heatmap der Δ-Werte
+    deltas = np.array([cf.reshape(-1) - seq_unscaled.reshape(-1) for cf in cf_examples])
+    plt.figure(figsize=(8, 4))
+    plt.imshow(deltas, aspect="auto", cmap="coolwarm", interpolation="nearest")
+    plt.colorbar(label="Δ Value")
+    plt.title("Δ (CF − Original)")
+    plt.savefig(
+        os.path.join(ml_type, "dice_heatmap_deltas.png"),
+        dpi=300, bbox_inches="tight"
+    )
     plt.close()
 
-    # 8.6 Diversity vs. Proximity
-    from itertools import combinations
-    # Compute pairwise distances
+    # 8.6 Diversity & Proximity
     flats = [cf.reshape(-1) for cf in cf_examples]
-    # Diversity: mean of pairwise L2 norms
-    div_list = [
-        np.linalg.norm(flats[i] - flats[j])
-        for i, j in combinations(range(len(flats)), 2)
-    ]
-    diversity = float(np.mean(div_list)) if div_list else 0.0
-    # Proximity: mean L2 norm to original flat
-    prox_list = [
-        np.linalg.norm(f - flat.reshape(-1)) for f in flats
-    ]
-    proximity = float(-np.mean(prox_list)) if prox_list else 0.0
-    # Plot and save
-    plt.figure(figsize=(4,3))
-    plt.bar(['Diversity','Proximity'], [diversity, proximity])
-    plt.title('Diversity vs Proximity')
-    plt.savefig(os.path.join(ml_type, 'dice_diversity_proximity.png'), dpi=300, bbox_inches='tight')
+    diversity = float(
+        np.mean([np.linalg.norm(flats[i] - flats[j])
+                 for i, j in combinations(range(len(flats)), 2)])
+    ) if len(flats) > 1 else 0.0
+    proximity = float(
+        -np.mean([np.linalg.norm(f - seq_unscaled.reshape(-1)) for f in flats])
+    ) if flats else 0.0
+    plt.figure(figsize=(4, 3))
+    plt.bar(["Diversity", "Proximity"], [diversity, proximity])
+    plt.title("Diversity vs Proximity")
+    plt.savefig(
+        os.path.join(ml_type, "dice_diversity_proximity.png"),
+        dpi=300, bbox_inches="tight"
+    )
     plt.close()
 
-    return {'cf_examples': cf_examples, 'y_orig': y_orig, 'y_cfs': y_cfs} 
+    # ───────────────────────────────────────────────────────────────
+    # 9 | Rückgabe
+    # ───────────────────────────────────────────────────────────────
+    return {
+        "cf_examples_scaled":   cf_examples_scaled,
+        "cf_examples_unscaled": cf_examples,
+        "y_orig_scaled":        y_orig_scaled,
+        "y_orig":               y_orig,
+        "y_cfs_scaled":         y_cfs_scaled,
+        "y_cfs":                y_cfs
+    }
+
 
 def generate_counterfactuals(
     data: dict,
@@ -1315,139 +1543,870 @@ def grid_cf_unscaled_direct(
         print(f"✅ Unskaliertes CF-Raster gespeichert: {path}")
         del fig
 
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.cm import viridis, ScalarMappable
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.cm import ScalarMappable, viridis
+
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.cm import ScalarMappable, viridis
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.cm import ScalarMappable, viridis
+
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.cm import ScalarMappable, viridis
 
 
 def cf_scatter_percent(
     ML_DATA,
     model,
-    feature_names,                    
-    feature,                          
-    factors=(0.50, 0.75, 1.25, 1.50), 
+    feature_names,
+    feature,
+    factors=(0.50, 0.75, 1.25, 1.50),
     Control_Var=None,
-    timestep=0,                      
-    bg_idx=None,                      
-    jitter=0.3,                       
-    lin_thresh=20.0               
+    timestep_idx_input=None,          # 0–5 | None ⇒ ∅ aller 6 Eingabe-TS
+    timestep_idx_forecast=None,       # 0–9 | None ⇒ ∅ aller 10 Output-TS
+    bg_idx=None,
+    jitter=0.3,
+    lin_thresh=20.0,
+    aggregate_input_timesteps=True,
+    aggregate_output_timesteps=True,
+    color_by_distance=True,
+    verbose=False
 ):
-    """
-    Δ-Vorhersage [%] für verschiedene Multiplikationsfaktoren eines Features,
-    mit symlog-Skalierung und festen Ticks, Label ‚10^0‘ nur einmal.
-    """
-    ml_name = (Control_Var or {})["MLtype"] if Control_Var else "model"
-    out_dir = os.path.join(".", ml_name)
-    os.makedirs(out_dir, exist_ok=True)
+    """Scatter-Raster der %-Δ-Vorhersage; ohne Punkt-Legende, nur Colorbar."""
+    # ───────────────── Basisdaten ────────────────────────────────────────────
+    X_all = ML_DATA["X_TEST"]                      # (N, IN_TS, F)
+    N, IN_TS, F = X_all.shape
+    X_raw = X_all[bg_idx] if bg_idx is not None else X_all
 
-    # Basis-Daten
-    X_all  = ML_DATA["X_TEST"]
-    X_base = X_all[bg_idx] if bg_idx is not None else X_all
-    y_pred = model.predict(X_base)
-    y_base = y_pred.mean(axis=1) if y_pred.ndim > 1 else y_pred.ravel()
+    y_probe = model.predict(X_raw[:1])
+    if y_probe.ndim == 1:
+        y_probe = y_probe[:, None]
+    OUT_TS = y_probe.shape[1]
 
-    # Feature-Index
+    if timestep_idx_input is not None:
+        timestep_idx_input = int(np.clip(timestep_idx_input, 0, IN_TS - 1))
+    if timestep_idx_forecast is not None:
+        timestep_idx_forecast = int(np.clip(timestep_idx_forecast, 0, OUT_TS - 1))
+
     feat_idx = feature_names.index(feature)
+    sigma_feat = X_all[:, :, feat_idx].std(ddof=0)
+    if sigma_feat == 0:
+        raise ValueError(f"σ({feature}) = 0 – Distanz nicht definiert.")
+    eps = 1e-12
 
-    # Subplots anlegen
+    # ───────── Basis-Input in Modell-Shape ───────────────────────────────────
+    if aggregate_input_timesteps:
+        # 1:1-Übernahme des Originals → Spitzen bleiben erhalten
+        X_base_in = X_raw.copy()            # Shape (N, IN_TS, F)
+    else:
+        # Optional: gezielten Zeitschritt duplizieren (unverändert)
+        idx_in = timestep_idx_input if timestep_idx_input is not None else -1
+        X_base_in = np.repeat(X_raw[:, [idx_in], :], IN_TS, 1)
+    y_base_pred = model.predict(X_base_in)
+    if y_base_pred.ndim == 1:
+        y_base_pred = y_base_pred[:, None]
+    y_base = (y_base_pred.mean(axis=1) if aggregate_output_timesteps
+              else y_base_pred[:, timestep_idx_forecast])
+
+    # ───────── Plot-Setup ────────────────────────────────────────────────────
     n_fac = len(factors)
-    fig, axes = plt.subplots(1, n_fac, figsize=(5*n_fac,4),
-                             sharey=True, sharex=True)
+    fig, axes = plt.subplots(1, n_fac, figsize=(5 * n_fac, 4),
+                             sharex=True, sharey=True)
     if n_fac == 1:
         axes = [axes]
 
-    rng = np.random.RandomState(0)
-
-    # die gewünschten y-Ticks
+    rng = np.random.default_rng(0)
     fixed_ticks = [-1000, -100, -10, 0, 10, 100, 1000]
-
-    # scalar formatter konfigurieren
-    sf = mticker.ScalarFormatter()
+    sf = mticker.ScalarFormatter(useOffset=False)
     sf.set_scientific(False)
-    sf.set_useOffset(False)
 
-    # Plot-Schleife
+    norm = plt.Normalize(0, max(factors) * 2)
+    sm = ScalarMappable(norm=norm, cmap=viridis)
+
+    # ───────── Counterfactuals ───────────────────────────────────────────────
     for ax, fac in zip(axes, factors):
-        # Counterfactual erzeugen
-        X_cf = X_base.copy()
-        X_cf[:, timestep, feat_idx] *= fac
+        X_cf = X_base_in.copy()
+        X_cf[:, :, feat_idx] *= fac
 
-        # Vorhersage
         y_cf_pred = model.predict(X_cf)
-        y_cf      = y_cf_pred.mean(axis=1) if y_cf_pred.ndim > 1 else y_cf_pred.ravel()
+        if y_cf_pred.ndim == 1:
+            y_cf_pred = y_cf_pred[:, None]
+        y_cf = (y_cf_pred.mean(axis=1) if aggregate_output_timesteps
+                else y_cf_pred[:, timestep_idx_forecast])
 
-        # Δ in Prozent, clamp
-        eps       = 1e-6
-        delta_pct = (y_cf - y_base)/(np.abs(y_base)+eps)*100
+        delta_pct = (y_cf - y_base) / (np.abs(y_base) + eps) * 100
         delta_pct = np.clip(delta_pct, -1000, 1000)
 
-        # nur Samples mit Basis >1e-3
-        mask = np.abs(y_base) > 1e-3
-        idxs = np.arange(len(delta_pct))[mask]
-        vals = delta_pct[mask]
-        xs   = idxs + rng.normal(0, jitter, size=idxs.shape)
+        dist = np.abs(X_cf[:, 0, feat_idx] - X_base_in[:, 0, feat_idx]) / (sigma_feat + eps)
 
-        # Label
-        arrow = "↑" if fac > 1 else "↓"
-        pct   = int(abs((fac-1)*100))
-        lbl   = f"{arrow}{pct}%"
+        if verbose:
+            print(f"Fac {fac:.2f}: Δ-Median {np.median(delta_pct):+.2f}%  "
+                  f"dist-Median {np.median(dist):.2f}")
 
-        # Plot
-        ax.scatter(xs, vals, s=20, alpha=0.7, label=lbl)
+        m = np.abs(y_base) > 1e-3
+        xs = np.where(m)[0] + rng.normal(0, jitter, m.sum())
+        ys = delta_pct[m]
+        colours = sm.to_rgba(dist[m]) if color_by_distance else "tab:blue"
+
+        ax.scatter(xs, ys, s=20, alpha=0.7, c=colours)
+
         ax.axhline(0, color="gray", linewidth=1)
         ax.set_yscale("symlog", linthresh=lin_thresh)
         ax.set_ylim(-1000, 1000)
-
-        # **Tick-Konfiguration**
         ax.set_yticks(fixed_ticks)
         ax.yaxis.set_major_formatter(sf)
         ax.yaxis.set_minor_locator(mticker.NullLocator())
-        ax.yaxis.set_minor_formatter(mticker.NullFormatter())
-
-        # Entferne doppelte '10^0'-Labels
-        for label in ax.get_yticklabels():
-            if label.get_text() == "10^0":
-                label.set_text("1")
-
         ax.grid(True, which="both", linestyle=":", linewidth=0.5)
-        ax.set_title(f"Faktor {fac:.2f} ({lbl})")
-        ax.set_xlabel("Testdatensatz")
+        ax.set_title(f"Faktor {fac:.2f}")
 
     axes[0].set_ylabel("Δ Vorhersage [%]")
+    axes[-1].set_xlabel("Test-Sample")
 
-    # Supertitle
-    h = (Control_Var or {}).get("H")
-    h=h-1
-    if h is not None:
-        fig.suptitle(f"{ml_name}: %-Änderung der Vorhersage bei {feature} (t={h})",
-                     y=1.02, fontsize=12)
-    else:
-        fig.suptitle(f"{ml_name}: %-Änderung der Vorhersage bei {feature}",
-                     y=1.02, fontsize=12)
+    # ───────── Titel ─────────────────────────────────────────────────────────
+    ml_name = (Control_Var or {}).get("MLtype", "model")
+    in_txt  = "Input ∅" if aggregate_input_timesteps else f"Input t={timestep_idx_input}"
+    out_txt = "Output ∅" if aggregate_output_timesteps else f"Output t={timestep_idx_forecast}"
+    fig.suptitle(f"{ml_name}: %-Δ bei Skalierung von {feature}  ({in_txt}, {out_txt})",
+                 y=0.96, fontsize=12)
 
-    # Gemeinsame Legende
-    all_h, all_l = [], []
-    for ax in axes:
-        h, l = ax.get_legend_handles_labels()
-        all_h += h; all_l += l
-    uniq_h, uniq_l, seen = [], [], set()
-    for hndl, lbl in zip(all_h, all_l):
-        if lbl not in seen:
-            uniq_h.append(hndl); uniq_l.append(lbl); seen.add(lbl)
+    # ───────── Layout: Colorbar ohne Punkt-Legende ───────────────────────────
+    fig.tight_layout(rect=[0, 0.25, 1, 0.98])
 
+    cax = fig.add_axes([0.25, 0.12, 0.70, 0.05])   # [left, bottom, width, height]
+    cb  = plt.colorbar(sm, cax=cax, orientation="horizontal")
+    cb.set_label("Distanz (σ-normiert)")
 
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    # ───────── Speichern ─────────────────────────────────────────────────────
     feat_safe = feature.replace("[", "").replace("]", "").replace("/", "_")
-    fname = f"{ml_name}_counterfactual_{feat_safe}_cf_scatter_pct" + \
-            "-".join(str(int((f-1)*100)) for f in factors) + ".png"
+    fname = (f"{ml_name}_cf_scatter_{feat_safe}_"
+             f"{'inAvg' if aggregate_input_timesteps else f'in{timestep_idx_input}'}_"
+             f"{'outAvg' if aggregate_output_timesteps else f'out{timestep_idx_forecast}'}.png")
+    out_dir = os.path.join(".", ml_name)
+    os.makedirs(out_dir, exist_ok=True)
     fpath = os.path.join(out_dir, fname)
-    fig.savefig(fpath, dpi=300, bbox_inches="tight")
+    fig.savefig(fpath, dpi=300)
     plt.close(fig)
+    print("✅ Scatter-Plot gespeichert:", fpath)
 
-    print("✅ Scatter-Raster gespeichert:", fpath)
-    del fig
+import os, random, numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+from matplotlib.lines import Line2D
+def cf_scatter_percent_zufällig(
+    ML_DATA, model, feature_names, feature,
+    factors=(0.5, 0.75, 1.25, 1.5),
+    Control_Var=None,
+    timestep_idx_input=None, timestep_idx_forecast=None,
+    bg_idx=None,
+    jitter=0.3, lin_thresh=20.0,
+    aggregate_input_timesteps=True, aggregate_output_timesteps=True,
+    x_scaler=None, y_scaler=None,
+    verbose=False, debug=False,
+    fixed_ymax_abs=None
+):
+    # ── Plausibilitätsprüfung ──────────────────────────────────────────
+    if x_scaler is None or not all(hasattr(x_scaler, a)
+                                   for a in ("data_min_", "data_max_", "scale_", "min_")):
+        raise ValueError("x_scaler fehlt oder unvollständig.")
+    if y_scaler is None or not hasattr(y_scaler, "inverse_transform"):
+        raise ValueError("y_scaler (mit inverse_transform) fehlt.")
 
+    # ── Basisdaten ------------------------------------------------------
+    X_all = ML_DATA["X_TEST"]
+    X_raw = X_all[bg_idx] if bg_idx is not None else X_all
+    _, IN_TS, F = X_all.shape
+    N= X_raw.shape[0]
+    y_probe = model.predict(X_raw[:1])
+    if y_probe.ndim == 1: y_probe = y_probe[:, None]
+    OUT_TS = y_probe.shape[1]
+
+    # Index-Grenzen absichern
+    timestep_idx_input    = int(np.clip(
+        timestep_idx_input if timestep_idx_input is not None else -1,
+        -IN_TS, IN_TS-1))
+    timestep_idx_forecast = int(np.clip(
+        timestep_idx_forecast if timestep_idx_forecast is not None else -1,
+        -OUT_TS, OUT_TS-1))
+
+    feat_idx = feature_names.index(feature)
+    to_orig  = lambda x: (x - x_scaler.min_[feat_idx]) / x_scaler.scale_[feat_idx]
+    to_scaled= lambda x: x * x_scaler.scale_[feat_idx] + x_scaler.min_[feat_idx]
+    eps = 1e-12
+
+    # ── Basis-Input -----------------------------------------------------
+    if aggregate_input_timesteps:
+        X_base_in = X_raw.copy()              # komplette Sequenz
+    else:
+        X_base_in = X_raw.copy()              # Sequenz unverändert
+
+    y_base_scaled = model.predict(X_base_in)
+    if y_base_scaled.ndim == 1: y_base_scaled = y_base_scaled[:, None]
+    y_base_unscaled = y_scaler.inverse_transform(y_base_scaled)
+
+    # ── Counterfactuals -------------------------------------------------
+    y_cf_vals_list, was_clipped_list = [], []
+    for fac in factors:
+        X_cf = X_base_in.copy()
+
+        # Ganze Sequenz unskaliert holen
+        x_orig_full = to_orig(X_cf[:, :, feat_idx])
+
+        # Nur den gewählten Input-Step ändern
+        x_mod_step  = np.clip(
+            x_orig_full[:, timestep_idx_input] * fac,
+            x_scaler.data_min_[feat_idx],
+            x_scaler.data_max_[feat_idx]
+        )
+        x_orig_full[:, timestep_idx_input] = x_mod_step
+        X_cf[:, :, feat_idx] = to_scaled(x_orig_full)
+
+        was_clipped = (x_mod_step == x_scaler.data_min_[feat_idx]) | \
+                      (x_mod_step == x_scaler.data_max_[feat_idx])
+        was_clipped_list.append(was_clipped)
+
+        y_cf_scaled = model.predict(X_cf)
+        if y_cf_scaled.ndim == 1: y_cf_scaled = y_cf_scaled[:, None]
+        y_cf_vals_list.append(y_scaler.inverse_transform(y_cf_scaled))
+
+    # ── Forecast-Slice --------------------------------------------------
+    if aggregate_output_timesteps:
+        y_base_vals = y_base_unscaled.mean(axis=1)
+        y_cf_vals_list = [ycf.mean(axis=1) for ycf in y_cf_vals_list]
+        horizon_tag = ""
+    else:
+        y_base_vals = y_base_unscaled[:, timestep_idx_forecast]
+        y_cf_vals_list = [ycf[:, timestep_idx_forecast] for ycf in y_cf_vals_list]
+        horizon_tag = f"und Vorhersagehorizont h = {timestep_idx_forecast+1}"
+
+    # ── Clipping nur für Plot-Kopien ------------------------------------
+    ymin = 0
+    all_y = np.concatenate([y_base_vals] + y_cf_vals_list)
+    ymax = 7.5
+    y_base_plot, y_cf_plotlist = y_base_vals, y_cf_vals_list
+
+    # ── Titelbausteine --------------------------------------------------
+    model_name = Control_Var.get("MLtype", "model") if Control_Var else "model"
+    input_tag  = "(voll aggregiert)" if aggregate_input_timesteps else f"für Eingabeschritt t = {timestep_idx_input+1}"
+
+    # ── Plot 1 – Δ-Prozent-Scatter -------------------------------------
+    n_fac = len(factors)
+    fig_pct, ax_pct = plt.subplots(
+        1, n_fac,
+        figsize=(5 * n_fac, 4),
+        gridspec_kw={'wspace': 0.4}   # gleicht den Abstand an den Absolut-Plot an
+    )
+    rng = np.random.default_rng(0)
+    sf = mticker.ScalarFormatter(useOffset=False); sf.set_scientific(False)
+
+    handles_cache = None
+    for ax, fac, ycf_vals, clipped in zip(ax_pct, factors, y_cf_vals_list, was_clipped_list):
+        delta_pct = (ycf_vals - y_base_vals) / (np.abs(y_base_vals)+eps) * 100
+        delta_pct = np.clip(delta_pct, -10000, 10000)
+
+        normal  = ~clipped
+        sc1 = ax.scatter(np.where(normal)[0] + rng.normal(0,jitter,normal.sum()),
+                         delta_pct[normal], s=20, alpha=0.7, c="tab:blue", marker="o")
+        sc2 = ax.scatter(np.where(clipped)[0]+ rng.normal(0,jitter,clipped.sum()),
+                         delta_pct[clipped], s=40, alpha=0.9, c="red", marker="x")
+        if handles_cache is None: handles_cache = [sc1, sc2]
+
+        ax.axhline(0, color="gray", lw=1)
+        ax.set_yscale("symlog", linthresh=lin_thresh)
+        ax.set_ylim(-1000, 1000)
+        ax.grid(ls=":", lw=0.5); ax.set_title(f"Faktor {fac:.2f}")
+        ax.set_xlabel("Testinstanz")
+        ax.set_ylabel("Δ Vorhersage [%]")
+        ax.set_xlim(0, 100)      
+
+    handles_pct = [
+        Line2D([0], [0], marker="o", color="tab:blue",   linestyle="none", ms=6, label="nicht geclippt"),
+        Line2D([0], [0], marker="x", color="red",        linestyle="none", ms=6, label="geclippt")
+    ]
+
+    # 2) Legende exakt wie im Absolut-Plot platzieren und stylen
+    fig_pct.subplots_adjust(top=0.85, bottom=0.25)
+
+    # 2) Legende an der Figure, unten mittig einhängen
+    fig_pct.legend(
+        handles=handles_pct,
+        loc='lower center',               # Anker in der Mitte unten
+        bbox_to_anchor=(0.5, 0.05),       # x=0.5 (mittel), y=0.05 (5% über der unteren Figure-Grenze)
+        ncol=2,
+        frameon=False
+    )
+    feature_disp = feature.replace("1", "/")
+    fig_pct.suptitle(f"{model_name} – Prozentuales Counterfactual zufällige Werte: {feature_disp} {input_tag} {horizon_tag}",
+                     y=0.97)
+
+
+    out_dir = os.path.join(".", model_name); os.makedirs(out_dir, exist_ok=True)
+    feat_safe = feature.replace("[", "").replace("]", "").replace("/", "1")
+    fname_pct = f"{model_name}_cf_scatter_{feat_safe}_{input_tag.replace(' ','')}_{horizon_tag}_perc.png"
+    fname_pct_save = fname_pct.replace("/", "1")
+    fig_pct.savefig(os.path.join(out_dir, fname_pct_save), dpi=300); plt.close(fig_pct)
+
+    # ── Plot 2 – Absolut-Vorher/Nachher ---------------------------------
+    fig_abs, ax_abs = plt.subplots(1, n_fac, figsize=(5*n_fac, 4), sharex=True, gridspec_kw={'wspace': 0.4})
+    ax_abs = np.atleast_1d(ax_abs)
+    xs = np.arange(len(y_base_plot))
+
+    for ax, fac, ycf_vals, ycf_plot in zip(ax_abs, factors, y_cf_vals_list, y_cf_plotlist):
+        ax.plot(np.vstack([xs,xs]), np.vstack([y_base_plot,ycf_plot]),
+                color="gray", lw=0.6, alpha=0.5)
+        ax.scatter(xs, y_base_plot, s=22, c="tab:blue", marker="o", alpha=0.8)
+        ax.scatter(xs, ycf_plot,   s=30, c="tab:orange", marker="^", alpha=0.9)
+        ax.set_ylim(ymin, ymax); ax.grid(ls=":", lw=0.5)
+        ax.set_title(f"Faktor {fac:.2f}")
+        ax.set_xlabel("Testinstanz")
+        ax.set_ylabel("Vorhersage (kW, unskaliert)")
+        ax.set_xlim(0, N)      
+
+    handles = [
+        Line2D([0], [0], marker="o", color="tab:blue",   linestyle="none", ms=6, label="Originale Vorhersage"),
+        Line2D([0], [0], marker="^", color="tab:orange", linestyle="none", ms=6, label="Counterfactual Vorhersage")
+    ]
+    feature_disp = feature.replace("1", "/")
+
+    fig_abs.suptitle(f"{model_name} – Absolutes Counterfactual zufällige Werte: {feature_disp} {input_tag} {horizon_tag}",
+                     y=0.97)
+    fig_abs.subplots_adjust(top=0.85, bottom=0.30)      # mehr unteren Rand
+    fig_abs.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.04),                     # ggf. Legendensitz weiter nach unten
+        frameon=False,
+        borderaxespad=1.0                               # Abstand zwischen Legende und Achsen
+    )
+    
+    fig_abs.tight_layout(rect=[0, 0.15, 1, 0.98]) 
+    fname_abs = fname_pct.replace("/","1").replace("perc","abs")
+    fig_abs.savefig(os.path.join(out_dir, fname_abs), dpi=300); plt.close(fig_abs)
+
+    if debug:
+        print("Max unskaliert:", y_base_unscaled.max())
+        print("Max Slice    :", y_base_vals.max())
+    print("✅ Scatter-Plot gespeichert:", fname_pct)
+    print("✅ Absolut-Plot gespeichert:", fname_abs)
+
+def cf_scatter_percent_max(
+    ML_DATA, model, feature_names, feature,
+    factors=(0.5, 0.75, 1.25, 1.5),
+    Control_Var=None,
+    timestep_idx_input=None, timestep_idx_forecast=None,
+    bg_idx=None,
+    jitter=0.3, lin_thresh=20.0,
+    aggregate_input_timesteps=True, aggregate_output_timesteps=True,
+    x_scaler=None, y_scaler=None,
+    verbose=False, debug=False, fixed_ymax_abs=None
+):
+    # ── Plausibilitätsprüfung ──────────────────────────────────────────
+    if x_scaler is None or not all(hasattr(x_scaler, a)
+                                   for a in ("data_min_", "data_max_", "scale_", "min_")):
+        raise ValueError("x_scaler fehlt oder unvollständig.")
+    if y_scaler is None or not hasattr(y_scaler, "inverse_transform"):
+        raise ValueError("y_scaler (mit inverse_transform) fehlt.")
+
+    # ── Basisdaten ------------------------------------------------------
+    X_all = ML_DATA["X_TEST"]
+    X_raw = X_all[bg_idx] if bg_idx is not None else X_all
+    _, IN_TS, F = X_all.shape
+    N= X_raw.shape[0]
+    y_probe = model.predict(X_raw[:1])
+    if y_probe.ndim == 1: y_probe = y_probe[:, None]
+    OUT_TS = y_probe.shape[1]
+
+    # Index-Grenzen absichern
+    timestep_idx_input    = int(np.clip(
+        timestep_idx_input if timestep_idx_input is not None else -1,
+        -IN_TS, IN_TS-1))
+    timestep_idx_forecast = int(np.clip(
+        timestep_idx_forecast if timestep_idx_forecast is not None else -1,
+        -OUT_TS, OUT_TS-1))
+
+    feat_idx = feature_names.index(feature)
+    to_orig  = lambda x: (x - x_scaler.min_[feat_idx]) / x_scaler.scale_[feat_idx]
+    to_scaled= lambda x: x * x_scaler.scale_[feat_idx] + x_scaler.min_[feat_idx]
+    eps = 1e-12
+
+    # ── Basis-Input -----------------------------------------------------
+    if aggregate_input_timesteps:
+        X_base_in = X_raw.copy()              # komplette Sequenz
+    else:
+        X_base_in = X_raw.copy()              # Sequenz unverändert
+
+    y_base_scaled = model.predict(X_base_in)
+    if y_base_scaled.ndim == 1: y_base_scaled = y_base_scaled[:, None]
+    y_base_unscaled = y_scaler.inverse_transform(y_base_scaled)
+
+    # ── Counterfactuals -------------------------------------------------
+    y_cf_vals_list, was_clipped_list = [], []
+    for fac in factors:
+        X_cf = X_base_in.copy()
+
+        # Ganze Sequenz unskaliert holen
+        x_orig_full = to_orig(X_cf[:, :, feat_idx])
+
+        # Nur den gewählten Input-Step ändern
+        x_mod_step  = np.clip(
+            x_orig_full[:, timestep_idx_input] * fac,
+            x_scaler.data_min_[feat_idx],
+            x_scaler.data_max_[feat_idx]
+        )
+        x_orig_full[:, timestep_idx_input] = x_mod_step
+        X_cf[:, :, feat_idx] = to_scaled(x_orig_full)
+
+        was_clipped = (x_mod_step == x_scaler.data_min_[feat_idx]) | \
+                      (x_mod_step == x_scaler.data_max_[feat_idx])
+        was_clipped_list.append(was_clipped)
+
+        y_cf_scaled = model.predict(X_cf)
+        if y_cf_scaled.ndim == 1: y_cf_scaled = y_cf_scaled[:, None]
+        y_cf_vals_list.append(y_scaler.inverse_transform(y_cf_scaled))
+
+    # ── Forecast-Slice --------------------------------------------------
+    if aggregate_output_timesteps:
+        y_base_vals = y_base_unscaled.mean(axis=1)
+        y_cf_vals_list = [ycf.mean(axis=1) for ycf in y_cf_vals_list]
+        horizon_tag = ""
+    else:
+        y_base_vals = y_base_unscaled[:, timestep_idx_forecast]
+        y_cf_vals_list = [ycf[:, timestep_idx_forecast] for ycf in y_cf_vals_list]
+        horizon_tag = f"und Vorhersagehorizont h = {timestep_idx_forecast+1}"
+
+    # ── Clipping nur für Plot-Kopien ------------------------------------
+    ymin = 0
+    ymax = 7.5
+    y_base_plot, y_cf_plotlist = y_base_vals, y_cf_vals_list
+
+    # ── Titelbausteine --------------------------------------------------
+    model_name = Control_Var.get("MLtype", "model") if Control_Var else "model"
+    input_tag  = "(voll aggregiert)" if aggregate_input_timesteps else f"für Eingabeschritt t = {timestep_idx_input+1}"
+
+    # ── Plot 1 – Δ-Prozent-Scatter -------------------------------------
+    n_fac = len(factors)
+    fig_pct, ax_pct = plt.subplots(
+        1, n_fac,
+        figsize=(5 * n_fac, 4),
+        gridspec_kw={'wspace': 0.4}   # gleicht den Abstand an den Absolut-Plot an
+    )
+    ax_pct = np.atleast_1d(ax_pct)
+    rng = np.random.default_rng(0)
+    sf = mticker.ScalarFormatter(useOffset=False); sf.set_scientific(False)
+
+    handles_cache = None
+    for ax, fac, ycf_vals, clipped in zip(ax_pct, factors, y_cf_vals_list, was_clipped_list):
+        delta_pct = (ycf_vals - y_base_vals) / (np.abs(y_base_vals)+eps) * 100
+        delta_pct = np.clip(delta_pct, -10000, 10000)
+
+        normal  = ~clipped
+        sc1 = ax.scatter(np.where(normal)[0] + rng.normal(0,jitter,normal.sum()),
+                         delta_pct[normal], s=20, alpha=0.7, c="tab:blue", marker="o")
+        sc2 = ax.scatter(np.where(clipped)[0]+ rng.normal(0,jitter,clipped.sum()),
+                         delta_pct[clipped], s=40, alpha=0.9, c="red", marker="x")
+        if handles_cache is None: handles_cache = [sc1, sc2]
+
+        ax.axhline(0, color="gray", lw=1)
+        ax.set_yscale("symlog", linthresh=lin_thresh)
+        ax.set_ylim(-1000, 1000)
+        ax.grid(ls=":", lw=0.5); ax.set_title(f"Faktor {fac:.2f}")
+        ax.set_xlabel("Testinstanz")
+        ax.set_ylabel("Δ Vorhersage [%]")
+        ax.set_xlim(0, 100)      
+
+    handles_pct = [
+        Line2D([0], [0], marker="o", color="tab:blue",   linestyle="none", ms=6, label="nicht geclippt"),
+        Line2D([0], [0], marker="x", color="red",        linestyle="none", ms=6, label="geclippt")
+    ]
+
+    # 2) Legende exakt wie im Absolut-Plot platzieren und stylen
+    fig_pct.subplots_adjust(top=0.85, bottom=0.25)
+
+    # 2) Legende an der Figure, unten mittig einhängen
+    fig_pct.legend(
+        handles=handles_pct,
+        loc='lower center',               # Anker in der Mitte unten
+        bbox_to_anchor=(0.5, 0.05),       # x=0.5 (mittel), y=0.05 (5% über der unteren Figure-Grenze)
+        ncol=2,
+        frameon=False
+    )
+    feature_disp = feature.replace("1", "/")
+    fig_pct.suptitle(f"{model_name} – Prozentuales Counterfactual maximale Werte: {feature_disp} {input_tag} {horizon_tag}",
+                     y=0.97)
+
+
+    out_dir = os.path.join(".", model_name); os.makedirs(out_dir, exist_ok=True)
+    feat_safe = feature.replace("[", "").replace("]", "").replace("/", "1")
+    fname_pct = f"{model_name}_cf_scatter_max_{feat_safe}_{input_tag.replace(' ','')}_{horizon_tag}_perc.png"
+    fname_pct_save = fname_pct.replace("/", "1")
+    fig_pct.savefig(os.path.join(out_dir, fname_pct_save), dpi=300); plt.close(fig_pct)
+
+    # ── Plot 2 – Absolut-Vorher/Nachher ---------------------------------
+    fig_abs, ax_abs = plt.subplots(1, n_fac, figsize=(5*n_fac, 4), sharex=True, gridspec_kw={'wspace': 0.4})
+    ax_abs = np.atleast_1d(ax_abs)
+    xs = np.arange(len(y_base_plot))
+
+    for ax, fac, ycf_vals, ycf_plot in zip(ax_abs, factors, y_cf_vals_list, y_cf_plotlist):
+        ax.plot(np.vstack([xs,xs]), np.vstack([y_base_plot,ycf_plot]),
+                color="gray", lw=0.6, alpha=0.5)
+        ax.scatter(xs, y_base_plot, s=22, c="tab:blue", marker="o", alpha=0.8)
+        ax.scatter(xs, ycf_plot,   s=30, c="tab:orange", marker="^", alpha=0.9)
+        ax.set_ylim(ymin, ymax); ax.grid(ls=":", lw=0.5)
+        ax.set_title(f"Faktor {fac:.2f}")
+        ax.set_xlabel("Testinstanz")
+        ax.set_ylabel("Vorhersage (kW, unskaliert)")
+        ax.set_xlim(0, N)      
+
+    handles = [
+        Line2D([0], [0], marker="o", color="tab:blue",   linestyle="none", ms=6, label="Originale Vorhersage"),
+        Line2D([0], [0], marker="^", color="tab:orange", linestyle="none", ms=6, label="Counterfactual Vorhersage")
+    ]
+    feature_disp = feature.replace("1", "/")
+
+    fig_abs.suptitle(f"{model_name} – Absolutes Counterfactual maximale Werte: {feature_disp} {input_tag} {horizon_tag}",
+                     y=0.97)
+    fig_abs.subplots_adjust(top=0.85, bottom=0.30)      # mehr unteren Rand
+    fig_abs.legend(
+        handles=handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.04),                     # ggf. Legendensitz weiter nach unten
+        frameon=False,
+        borderaxespad=1.0                               # Abstand zwischen Legende und Achsen
+    )
+    
+    fig_abs.tight_layout(rect=[0, 0.15, 1, 0.98]) 
+    fname_abs = fname_pct.replace("/","1").replace("perc","abs")
+    fig_abs.savefig(os.path.join(out_dir, fname_abs), dpi=300); plt.close(fig_abs)
+
+    if debug:
+        print("Max unskaliert:", y_base_unscaled.max())
+        print("Max Slice    :", y_base_vals.max())
+    print("✅ Scatter-Plot gespeichert:", fname_pct)
+    print("✅ Absolut-Plot gespeichert:", fname_abs)
 
 ###############################################################################
 #Scatter‑Plot (Prozentuale Änderung EIN‑ vs. AUS‑Größe)                   #
 ###############################################################################
+# ───────────────────────────────── what_if.py ──────────────────────────────────
+def run_counterfactuals(model,
+                        ML_DATA: dict,
+                        Control_Var: dict,
+                        sample_id: int = 0,
+                        total_CFs: int = 3,
+                        desired_range: tuple = (0.9, 1.0),
+                        pr_low: float = 0.1,
+                        pr_high: float = 0.9):
+    """
+    Erstellt Counterfactuals für das letzte Prognose-Intervall (t = H–1)
+    und gibt sie in unskalierten Einheiten zurück.
+    
+    Neuer Parameter:
+      pr_low, pr_high: untere/obere Grenze im skalierten Raum für alle Features
+    """
+    # -----------------------------------------------------------------
+    # 1  Vorbereitungen
+    # -----------------------------------------------------------------
+    import numpy as np
+    import pandas as pd
+    import dice_ml
+    import joblib
+
+    PRE           = Control_Var['PRE']
+    H             = Control_Var['H']
+    feature_names = ML_DATA['xcols']
+    MLtype        = Control_Var['MLtype']
+
+    Xscaler = joblib.load(f"{MLtype}/Xscaler.pkl")
+    Yscaler = joblib.load(f"{MLtype}/Yscaler.pkl")
+
+    X_train = ML_DATA['X_TRAIN']
+    X_test  = ML_DATA['X_TEST']
+    n_feat  = X_train.shape[2]
+
+    # -----------------------------------------------------------------
+    # 2  Trainings-DataFrame: FLAT & SKALIERT + Dummy-Outcome
+    # -----------------------------------------------------------------
+    X_train_flat = X_train.reshape(X_train.shape[0], -1)
+    df_train = pd.DataFrame(
+        X_train_flat,
+        columns=[f"{f}_t{-τ}" for τ in range(PRE, -1, -1) for f in feature_names]
+    )
+    df_train["y"] = 0.0
+    cont_feats = [c for c in df_train.columns if c != "y"]
+
+    # -----------------------------------------------------------------
+    # 3  Wrapper für die Modell-Vorhersage
+    # -----------------------------------------------------------------
+    def _predict_last_step(arr_2d):
+        import pandas as _pd, numpy as _np
+        if isinstance(arr_2d, (_pd.DataFrame, _pd.Series)):
+            arr_2d = arr_2d.values
+        arr_3d        = arr_2d.reshape(-1, PRE + 1, n_feat)
+        pred_scaled   = model.predict(arr_3d, verbose=0)
+        pred_unscaled = Yscaler.inverse_transform(
+            pred_scaled.reshape(-1, 1)
+        ).reshape(-1, H, 1)
+        return pred_unscaled[:, -1, 0]
+
+    class PredWrapper:
+        def __init__(self, fn): self._fn = fn
+        def predict(self, X):   return self._fn(X)
+
+    # -----------------------------------------------------------------
+    # 4  DiCE-Objekte
+    # -----------------------------------------------------------------
+    dice_data = dice_ml.Data(
+        dataframe           = df_train,
+        continuous_features = cont_feats,
+        outcome_name        = "y"
+    )
+    dice_model = dice_ml.Model(
+        model      = PredWrapper(_predict_last_step),
+        backend    = "sklearn",
+        model_type = "regressor"
+    )
+    exp = dice_ml.Dice(dice_data, dice_model, method="genetic")
+
+    # -----------------------------------------------------------------
+    # 5  Query-Instanz (skaliert, ohne 'y')
+    # -----------------------------------------------------------------
+    query_flat = X_test[sample_id: sample_id + 1].reshape(1, -1)
+    query_df   = pd.DataFrame(query_flat, columns=cont_feats)
+
+    # -----------------------------------------------------------------
+    # 6  permitted_range für alle Features 0.05–0.95
+    # -----------------------------------------------------------------
+    permitted_range = {col: (pr_low, pr_high) for col in cont_feats}
+
+    # -----------------------------------------------------------------
+    # 7  Gegenbeispiele suchen (skaliert)
+    # -----------------------------------------------------------------
+    cfs_scaled = exp.generate_counterfactuals(
+        query_df,
+        total_CFs        = total_CFs,
+        desired_range    = list(desired_range),
+        features_to_vary = "all",
+        permitted_range  = permitted_range,
+        maxiterations    = 2000,
+    ).cf_examples_list[0].final_cfs_df
+
+    # -----------------------------------------------------------------
+    # 8  UNskalieren der CFs
+    # -----------------------------------------------------------------
+    cf_arr_scaled   = cfs_scaled[cont_feats].to_numpy()
+    n_cf            = cf_arr_scaled.shape[0]
+    cf_arr3         = cf_arr_scaled.reshape(n_cf, PRE + 1, n_feat)
+    cf_unscaled3    = np.empty_like(cf_arr3)
+    for τ in range(PRE + 1):
+        cf_unscaled3[:, τ, :] = Xscaler.inverse_transform(cf_arr3[:, τ, :])
+    cf_arr_unscaled = cf_unscaled3.reshape(n_cf, -1)
+
+    cf_df = pd.DataFrame(cf_arr_unscaled, columns=cont_feats)
+
+    # -----------------------------------------------------------------
+    # 9  Ausgabe
+    # -----------------------------------------------------------------
+    print("\n--- Counterfactuals (unskaliert) -----------------------------")
+    print(cf_df.round(3))
+    return cf_df
+
+def analyze_counterfactuals(cf_df,
+                            X_test: np.ndarray,
+                            Xscaler,
+                            sample_id: int,
+                            feature_names: list,
+                            PRE: int):
+    """Vergleicht jedes CF mit dem Original-Testpunkt und fasst Änderungen zusammen."""
+    
+    # ---------- Original-Punkt UNskaliert (als 1-Zeilen-DataFrame) ----------
+    orig_unscaled = Xscaler.inverse_transform(
+        X_test[sample_id].reshape(-1, len(feature_names))
+    ).reshape(PRE + 1, len(feature_names)).flatten()
+    
+    orig_df = pd.DataFrame([orig_unscaled], columns=cf_df.columns)
+    
+    # ---------- Delta-Matrix: CF – Original -------------------------------
+    delta      = cf_df - orig_df.iloc[0]
+    delta_abs  = delta.abs()
+    
+    # ---------- Aggregation je Feature (über alle Zeitschritte) -----------
+    # Spaltennamen: "<Feature>_t-τ" → wir nehmen den Teil vor '_t'
+    feat_base_names = [c.split('_t')[0] for c in cf_df.columns]
+    delta_abs.columns = feat_base_names
+    
+# ALT -----------------------------------------------------------------
+# feat_mean = delta_abs.groupby(level=0, axis=1).mean().T
+# feat_mean.columns = ['mean_abs_change']
+
+    feat_mean = (
+        delta_abs.groupby(axis=1, level=0)   # alle Zeit­schritte eines Features
+                .mean()                      #   ➜ Mittelwert je Feature & CF
+                .mean(axis=0)                #   ➜ Mittelwert über alle CF-Zeilen
+                .to_frame('mean_abs_change') #   ➜ einspaltiger DataFrame
+                .sort_values('mean_abs_change', ascending=False)
+    )
+    # ---------------------------------------------------------------------
+
+    feat_mean.sort_values('mean_abs_change', ascending=False, inplace=True)
+    
+    print("\n--- Feature-Ranking nach mittlerer absoluter Änderung ---")
+    print(feat_mean.round(3))
+    return delta, feat_mean
+
+
+def _percent_delta(y_cf: np.ndarray, y_base: np.ndarray) -> np.ndarray:
+    eps = 1e-9
+    return (y_cf - y_base) / (np.abs(y_base) + eps) * 100.0
+
+
+def _distance_wit(x_base: np.ndarray, x_cf: np.ndarray, sigma: float) -> np.ndarray:
+    """Distanz nach What-If-Tool (nur ein manipuliertes Merkmal)."""
+    eps = 1e-12
+    return np.abs(x_cf - x_base) / (sigma + eps)
+
+
+def quick_what_if(
+    model,
+    X_test: np.ndarray,
+    feature_names: list[str],
+    feature: str,
+    factors: tuple[float, ...] = (0.5, 0.75, 1.25, 1.5),
+    sample_idx: int = 0,
+    input_ts_idx: int | None = None,     # None  ⇒ über IN-Timesteps mitteln
+    output_ts_idx: int | None = None,    # None  ⇒ über OUT-Timesteps mitteln
+    out_dir: str = ".",
+) -> str:
+    """
+    Erstellt einen Scatter-Plot, der zeigt, wie stark die Vorhersage für
+    *ein* Test­sample reagiert, wenn das ausgewählte Feature mit
+    unterschiedlichen Faktoren skaliert wird.  
+    Zusätzlich wird das What-If-Distanz­maß berechnet und in der Konsole
+    aus­gegeben.
+
+    Rückgabewert
+    ------------
+    Pfad der gespeicherten PNG-Datei.
+    """
+    # ── Eingaben prüfen ─────────────────────────────────────────────────────────
+    if feature not in feature_names:
+        raise ValueError(f"'{feature}' ist kein bekanntes Feature.")
+    f_idx = feature_names.index(feature)
+
+    N, IN_TS, F = X_test.shape
+    sample_idx = int(np.clip(sample_idx, 0, N - 1))
+
+    # Vorhersage prüfen
+    y_pred = model.predict(X_test[[sample_idx]])
+    if y_pred.ndim == 1:
+        y_pred = y_pred[:, None]                 # → (1, OUT_TS=1)
+    OUT_TS = y_pred.shape[1]
+
+    # Time-Index ggf. einschmiegen
+    if input_ts_idx is not None:
+        input_ts_idx = int(np.clip(input_ts_idx, 0, IN_TS - 1))
+    if output_ts_idx is not None:
+        output_ts_idx = int(np.clip(output_ts_idx, 0, OUT_TS - 1))
+
+    # Basiseingabe & -vorhersage ────────────────────────────────────────────────
+    x_base_all_ts = X_test[sample_idx]                                   # (IN_TS, F)
+    if input_ts_idx is None:
+        x_base = x_base_all_ts.mean(axis=0)                              # (F,)
+    else:
+        x_base = x_base_all_ts[input_ts_idx]                             # (F,)
+
+    if output_ts_idx is None:
+        y_base = y_pred.mean(axis=1)[0]                                  # Skalar
+    else:
+        y_base = y_pred[0, output_ts_idx]                                # Skalar
+
+    # σ für Distanz
+    sigma_feat = X_test[:, :, f_idx].std(ddof=0)
+    if sigma_feat == 0:
+        print(f"⚠ σ({feature}) = 0  → Distanz nicht definiert.")
+    print(f"σ({feature}) = {sigma_feat:.4g}")
+
+    # ── Plot vorbereiten ───────────────────────────────────────────────────────
+    fig, ax = plt.subplots(figsize=(6, 4))
+    sf = mticker.ScalarFormatter()
+    sf.set_scientific(False)
+    ax.set_yscale("symlog", linthresh=20.0)
+    ax.set_yticks([-1000, -100, -10, 0, 10, 100, 1000])
+    ax.yaxis.set_major_formatter(sf)
+    ax.set_xlabel("Faktor")
+    ax.set_ylabel("Δ Vorhersage [%]")
+    ax.grid(True, which="both", linestyle=":", linewidth=0.5)
+
+    # ── Schleife über Faktoren ─────────────────────────────────────────────────
+    for fac in factors:
+        x_cf = x_base.copy()
+        x_cf[f_idx] *= fac
+
+        # Mini-Batch (1 × IN_TS × F) für Modell bauen
+        if input_ts_idx is None:
+            X_cf = np.broadcast_to(x_cf, (IN_TS, F)).copy()              # Durchschnitt → replizieren
+        else:
+            X_cf = x_base_all_ts.copy()
+            X_cf[input_ts_idx, f_idx] = x_cf[f_idx]
+
+        y_cf_pred = model.predict(X_cf.reshape(1, IN_TS, F))
+        if y_cf_pred.ndim == 1:
+            y_cf_pred = y_cf_pred[:, None]
+
+        if output_ts_idx is None:
+            y_cf = y_cf_pred.mean(axis=1)[0]
+        else:
+            y_cf = y_cf_pred[0, output_ts_idx]
+
+        delta_pct = _percent_delta(y_cf, y_base)
+        dist      = _distance_wit(x_base[f_idx], x_cf[f_idx], sigma_feat)
+
+        print(f"Faktor {fac:>5}:  Δ = {delta_pct:+7.2f} %   Distanz = {dist:.4f}")
+
+        ax.scatter([fac], [delta_pct],
+                   label=f"{fac:>4}  (dist={dist:.2f})",
+                   s=40)
+
+    ax.axhline(0, color="gray", linewidth=1)
+    ax.legend(title="Skalierungs­faktor")
+
+    title_txt = (f"What-If für '{feature}' – Sample {sample_idx}  "
+                 f"[IN {'∅' if input_ts_idx is None else input_ts_idx}, "
+                 f"OUT {'∅' if output_ts_idx is None else output_ts_idx}]")
+    plt.title(title_txt,
+    fontsize=16,pad=14)
+
+    # ── Speichern ──────────────────────────────────────────────────────────────
+    os.makedirs(out_dir, exist_ok=True)
+    fname = (f"whatif_{feature}_sample{sample_idx}_"
+             f"in{'avg' if input_ts_idx is None else input_ts_idx}_"
+             f"out{'avg' if output_ts_idx is None else output_ts_idx}.png")
+    fpath = os.path.join(out_dir, fname)
+    fig.tight_layout()
+    fig.savefig(fpath, dpi=300)
+    plt.close(fig)
+    print("✅ Plot gespeichert:", fpath)
+    return fpath
+# ───────────────────────────────────────────────────────────────────────────────
 
 
 def plot_actual_pv_output(
@@ -1488,14 +2447,14 @@ def plot_actual_pv_output(
     os.makedirs(out_dir, exist_ok=True)
 
     plt.figure(figsize=(8, 4))
-    plt.plot(y_sel, linewidth=1.5, label=f"Gemessene PV-Leistung t={hi}")
+    plt.plot(y_sel, linewidth=1.5, label=f"Gemessene PV-Leistung t={h+1}")
     plt.xlabel("Testdatensatz")
     plt.ylabel("produzierter PV-Strom [kW]")
-    plt.title(f"{ml_name} – Gemessene PV-Leistung (Forecast-Horizon {hi})")
+    plt.title(f"{ml_name} – Gemessene PV-Leistung (Forecast-Horizon {hi+1})")
     plt.grid(alpha=0.3)
     plt.tight_layout()
 
-    fname = f"{ml_name}_actual_pv_t{hi}.png"
+    fname = f"{ml_name}_actual_pv_t{hi+1}.png"
     path  = os.path.join(out_dir, fname)
     plt.savefig(path, dpi=300)
     plt.close()
@@ -1621,7 +2580,7 @@ def grid_counterfactual_plots_unscaled_all_timesteps(
             ax.grid(alpha=0.3)
 
         # Gesamtüberschrift
-        fig.suptitle("{}: Unskaliertes CF-Raster für '{}' (t+{})".format(
+        fig.suptitle("{}: Unskaliertes CF-Raster für '{}' (t={})".format(
             ml_name, feature, hi), fontsize=16)
 
         # Zentrale Legende unten
@@ -1649,162 +2608,6 @@ def grid_counterfactual_plots_unscaled_all_timesteps(
         print("✅ Unscaled Counterfactual-Raster gespeichert:", path)
         del fig
 
-
-
-
-def save_combined_pdp_ice_all_inputs_horizon_output(
-    model,
-    ML_DATA,
-    feature_names,
-    feature,
-    Control_Var,
-    scaler_y,
-    num_horizon_steps: int = 10,
-    sample_indices: Optional[np.ndarray] = None,
-    num_points: int = 30,
-    scaler_x: Optional[Union[MinMaxScaler, StandardScaler]] = None,
-    mode: Literal["aggregate", "single"] = "aggregate",   # NEU
-    timestep: int = 5,                                    # nur für mode="single"
-    filename: Optional[str] = None,
-) -> None:
-    """
-    Erzeugt für jeden Prognosehorizont einen PDP+ICE‑Plot.
-
-    mode="aggregate":  alle Timesteps des Features werden gleichzeitig
-                       auf denselben Wert gesetzt (Input‑Mittelwert wird
-                       als x‑Koordinate geplottet).
-
-    mode="single":     nur ein spezifischer Timestep (Parameter `timestep`)
-                       wird variiert; die x‑Achse zeigt den Wert dieses
-                       Timesteps.
-
-    ICE‑Kurven basieren auf einer Stichprobe (sample_indices);
-    der PDP wird immer über *alle* Test‑Sequenzen gebildet.
-    """
-
-    # ------------------------- Vorbereitung ------------------------------
-    X_test        = ML_DATA["X_TEST"].copy()
-    feature_idx   = feature_names.index(feature)
-    feature_clean = feature.replace("[", "").replace("]", "").replace(" ", "_")
-    model_name    = Control_Var["MLtype"]
-    H             = num_horizon_steps
-    n_samples     = X_test.shape[0]
-
-    if sample_indices is None:
-        sample_indices = np.random.choice(n_samples, 30, replace=False)
-
-    model_folder = f"./{model_name}"
-    os.makedirs(model_folder, exist_ok=True)
-
-    # ------------------------- Schleife über Horizonte -------------------
-    for horizon_step in range(H):
-        # --------------------- Wertebereich (skaliert) -------------------
-        if mode == "aggregate":
-            values = X_test[:, :, feature_idx].flatten()
-        else:  # mode == "single"
-            values = X_test[:, timestep, feature_idx]
-        vmin, vmax  = np.percentile(values, [1, 99])
-        value_range = np.linspace(vmin, vmax, num_points)
-
-        # x‑Achse (Original­einheit, falls scaler_x vorhanden)
-        if scaler_x is not None:
-            dummy = np.zeros((value_range.size, len(feature_names)))
-            dummy[:, feature_idx] = value_range
-            value_range_plot = scaler_x.inverse_transform(dummy)[:, feature_idx]
-        else:
-            value_range_plot = value_range
-
-        fig = plt.figure(figsize=(9, 6))
-        ice_matrix = []
-
-        # --------------------- ICE‑Kurven (Stichprobe) -------------------
-        for idx in sample_indices:
-            preds = []
-            for val in value_range:
-                X_tmp = X_test[idx:idx+1].copy()
-                if mode == "aggregate":
-                    X_tmp[0, :, feature_idx] = val
-                else:  # single timestep
-                    X_tmp[0, timestep, feature_idx] = val
-
-                y_hat = model.predict(X_tmp, verbose=0)
-                y_hat = y_hat[:, horizon_step, 0] if y_hat.ndim == 3 else y_hat[:, horizon_step]
-                preds.append(
-                    scaler_y.inverse_transform(y_hat.reshape(-1, 1))[0, 0]
-                )
-
-            ice_matrix.append(preds)
-            plt.plot(value_range_plot, preds, alpha=0.4, linewidth=1)
-
-        ice_matrix = np.asarray(ice_matrix)
-
-        # --------------------- PDP (alle Test‑Sequenzen) -----------------
-        pdp_all = []
-        for val in value_range:
-            X_mod = X_test.copy()
-            if mode == "aggregate":
-                X_mod[:, :, feature_idx] = val
-            else:
-                X_mod[:, timestep, feature_idx] = val
-
-            y_hat = model.predict(X_mod, verbose=0)
-            y_hat = y_hat[:, horizon_step, 0] if y_hat.ndim == 3 else y_hat[:, horizon_step]
-            y_hat_unscaled = scaler_y.inverse_transform(y_hat.reshape(-1, 1)).ravel()
-            pdp_all.append(y_hat_unscaled.mean())
-
-        plt.plot(value_range_plot, pdp_all,
-                 color="black", linewidth=2.8,
-                 label="PDP (alle Samples)")
-
-        # --------------------- Scatter‑Punkte ----------------------------
-        for idx in sample_indices:
-            if mode == "aggregate":
-                x_val_scaled = X_test[idx, :, feature_idx].mean()
-            else:
-                x_val_scaled = X_test[idx, timestep, feature_idx]
-
-            if scaler_x is not None:
-                temp = np.zeros((1, len(feature_names)))
-                temp[0, feature_idx] = x_val_scaled
-                x_val_plot = scaler_x.inverse_transform(temp)[0, feature_idx]
-            else:
-                x_val_plot = x_val_scaled
-
-            y_orig = model.predict(X_test[idx:idx+1], verbose=0)
-            y_orig = y_orig[:, horizon_step, 0] if y_orig.ndim == 3 else y_orig[:, horizon_step]
-            y_orig = scaler_y.inverse_transform(y_orig.reshape(-1, 1))[0, 0]
-            plt.scatter(x_val_plot, y_orig, color="black", s=15, alpha=0.6)
-
-        # --------------------- Layout & Export ---------------------------
-        unit_tag = " (Original)" if scaler_x is not None else " (skaliert)"
-        mode_tag = (
-            f"Eingabemittelwert über {X_test.shape[1]} Timesteps"
-            if mode == "aggregate"
-            else f"Eingabeschritt t ={timestep}"
-        )
-        plt.title(
-            f"PDP+ICE für '{feature}' ({mode_tag}) — "
-            f"Vorhersage t={horizon_step}"
-        )
-        plt.xlabel(f"{feature} — {mode_tag}{unit_tag}")
-        plt.ylabel("Solarstrom‑Vorhersage [kW]")
-        plt.ylim(0, 12)
-        plt.grid(True, linestyle=":", alpha=0.7)
-        plt.legend()
-        plt.tight_layout()
-
-        out_path = os.path.join(
-            model_folder,
-            f"{feature_clean}_t{horizon_step}_{mode}.png"
-        )
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"✅ PDP+ICE (mode={mode}) für Horizon {horizon_step}: {out_path}")
-        del fig
-
-
-
-
 def save_combined_pdp_ice_all_inputs_horizon_output(
     model,
     ML_DATA,
@@ -1817,238 +2620,196 @@ def save_combined_pdp_ice_all_inputs_horizon_output(
     num_points: int = 30,
     scaler_x: Optional[Union[MinMaxScaler, StandardScaler]] = None,
     mode: Literal["aggregate", "single"] = "aggregate",
+    aggregate_output: bool = False,
     timestep: int = 5,
     filename: Optional[str] = None,
 ) -> None:
     """
-    Erstellt für jeden Prognosehorizont (0 … num_horizon_steps‑1) einen
-    PDP+ICE‑Plot. Der PDP wird immer über *alle* Test‑Sequenzen berechnet.
+    Erstellt PDP+ICE-Plots für ein Feature.
 
-    mode="aggregate":  Alle Timesteps des Features erhalten denselben Wert.
-                       Die x‑Achse zeigt den Mittelwert dieser Timesteps.
-
-    mode="single":     Nur `timestep` wird variiert; x‑Achse zeigt dessen Wert.
-
-    Wird ein scaler_x übergeben, erscheinen die x‑Werte in Original­einheiten.
+    mode="aggregate":  Mittelt über alle Input-Timesteps.
+    mode="single":     Variiert nur den angegebenen timestep.
+    aggregate_output:   Wenn True, mittelt über alle Horizon-Steps und erzeugt einen einzigen Plot.
+                       Sonst je Horizon einen separaten Plot.
     """
+    import os, re, numpy as np
+    import matplotlib.pyplot as plt
 
-    # ------------------------- Vorbereitung ------------------------------
-    X_test        = ML_DATA["X_TEST"].copy()
-    feature_idx   = feature_names.index(feature)
-    feature_clean = feature.replace("[", "").replace("]", "").replace(" ", "_")
-    model_name    = Control_Var["MLtype"]
-    H             = num_horizon_steps
-    n_samples     = X_test.shape[0]
+    # ── Vorbereitung ─────────────────────────────────────────────────────────
+    X_test      = ML_DATA["X_TEST"].copy()  # (N, IN_TS, F)
+    feature_idx = feature_names.index(feature)
+    model_name  = Control_Var["MLtype"]
+    H           = num_horizon_steps
+    N, IN_TS, F = X_test.shape
 
+    # Feature für Dateinamen (Unterstriche statt Sonderzeichen)
+    feature_clean = re.sub(r"[^\w]", "_", feature)
+    # Feature für Titel behalten [], nur 1->/
+    title_feature = feature.replace('1','/')
+
+    # Sample-Auswahl
     if sample_indices is None:
-        sample_indices = np.random.choice(n_samples, 30, replace=False)
+        sample_indices = np.random.choice(N, min(30, N), replace=False)
 
-    model_folder = f"./{model_name}"
-    os.makedirs(model_folder, exist_ok=True)
+    out_dir = f"./{model_name}"
+    os.makedirs(out_dir, exist_ok=True)
 
-    # Klammerinhalt für die x‑Achse (z. B. "°C")
+    # Einheit aus Feature-Name
     m = re.search(r"\[(.*?)\]", feature)
-    feature_unit = m.group(1) if m else feature
+    unit = m.group(1) if m else ""
+    unit = unit.replace('1','/')
+    is_percent = '%' in unit
 
-    # ------------------------- Schleife über Horizonte -------------------
-    for horizon_step in range(H):
-        # --------------------- Wertebereich bestimmen --------------------
+    # Horizonte bestimmen: None=ein Plot, sonst für jeden
+    horizons = [None] if aggregate_output else list(range(H))
+
+    for h in horizons:
+        # ── Input-Wertebereich und Tag ─────────────────────────────────────
         if mode == "aggregate":
-            values = X_test[:, :, feature_idx].flatten()
-        else:  # mode == "single"
-            values = X_test[:, timestep, feature_idx]
-
-        vmin, vmax  = np.percentile(values, [1, 99])
-        value_range = np.linspace(vmin, vmax, num_points)            # skaliert
-
-        # x‑Werte ggf. zurückskalieren
-        if scaler_x is not None:
-            dummy = np.zeros((value_range.size, len(feature_names)))
-            dummy[:, feature_idx] = value_range
-            value_range_plot = scaler_x.inverse_transform(dummy)[:, feature_idx]
+            vals = X_test[:, :, feature_idx].flatten()
+            if aggregate_output:
+                mode_tag = "voll aggregiert"
+            else:
+                mode_tag = "aggregierte Eingabeschritte"
         else:
-            value_range_plot = value_range
+            vals = X_test[:, timestep, feature_idx]
+            mode_tag = f"für Eingabeschritt t = {timestep+1}"
+        vmin, vmax = np.percentile(vals, [1, 99])
+        value_range = np.linspace(vmin, vmax, num_points)
 
-        fig = plt.figure(figsize=(9, 6))
-        ice_matrix = []
+        # ── Rückskalierung falls Scaler übergeben ─────────────────────────
+        if scaler_x is not None:
+            dummy = np.zeros((num_points, len(feature_names)))
+            dummy[:, feature_idx] = value_range
+            vr_plot = scaler_x.inverse_transform(dummy)[:, feature_idx]
+        else:
+            vr_plot = value_range.copy()
+        if is_percent:
+            vr_plot *= 100
+            unit = '%'
 
-        # --------------------- ICE‑Kurven (Stichprobe) -------------------
+        # ── Plot erstellen ─────────────────────────────────────────────────
+        fig, ax = plt.subplots(figsize=(9, 6))
+
+        # ICE-Kurven
         for idx in sample_indices:
             preds = []
             for val in value_range:
-                X_tmp = X_test[idx : idx + 1].copy()
+                X_tmp = X_test[idx:idx+1].copy()
                 if mode == "aggregate":
                     X_tmp[0, :, feature_idx] = val
                 else:
                     X_tmp[0, timestep, feature_idx] = val
+                yhat = model.predict(X_tmp)
+                if aggregate_output:
+                    yval = yhat.reshape(-1, H).mean()
+                else:
+                    yval = yhat.reshape(-1, H)[0, h]
+                preds.append(scaler_y.inverse_transform([[yval]])[0, 0])
+            ax.plot(vr_plot, preds, alpha=0.4, linewidth=1)
 
-                y_hat = model.predict(X_tmp, verbose=0)
-                y_hat = (
-                    y_hat[:, horizon_step, 0]
-                    if y_hat.ndim == 3
-                    else y_hat[:, horizon_step]
-                )
-                preds.append(
-                    scaler_y.inverse_transform(y_hat.reshape(-1, 1))[0, 0]
-                )
-
-            ice_matrix.append(preds)
-            plt.plot(value_range_plot, preds, alpha=0.4, linewidth=1)
-
-        ice_matrix = np.asarray(ice_matrix)
-
-        # --------------------- PDP (über alle Samples) -------------------
-        pdp_all = []
+        # PDP über alle Samples
+        pdp_vals = []
         for val in value_range:
             X_mod = X_test.copy()
             if mode == "aggregate":
                 X_mod[:, :, feature_idx] = val
             else:
                 X_mod[:, timestep, feature_idx] = val
-
-            y_hat = model.predict(X_mod, verbose=0)
-            y_hat = (
-                y_hat[:, horizon_step, 0]
-                if y_hat.ndim == 3
-                else y_hat[:, horizon_step]
-            )
-            y_hat_unscaled = scaler_y.inverse_transform(
-                y_hat.reshape(-1, 1)
-            ).ravel()
-            pdp_all.append(y_hat_unscaled.mean())
-
-        plt.plot(
-            value_range_plot,
-            pdp_all,
-            color="black",
-            linewidth=2.8,
-            label="PDP",
-        )
-
-        # --------------------- Scatter‑Punkte ----------------------------
-        for idx in sample_indices:
-            if mode == "aggregate":
-                x_val_scaled = X_test[idx, :, feature_idx].mean()
+            yhat = model.predict(X_mod).reshape(-1, H)
+            if aggregate_output:
+                mean_out = yhat.mean(axis=1)
+                y_out = scaler_y.inverse_transform(mean_out.reshape(-1,1)).ravel()
+                pdp_vals.append(y_out.mean())
             else:
-                x_val_scaled = X_test[idx, timestep, feature_idx]
+                ystep = yhat[:, h]
+                y_out = scaler_y.inverse_transform(ystep.reshape(-1,1)).ravel()
+                pdp_vals.append(y_out.mean())
+        ax.plot(vr_plot, pdp_vals, color='black', linewidth=2.8, label='PDP')
 
-            if scaler_x is not None:
-                temp = np.zeros((1, len(feature_names)))
-                temp[0, feature_idx] = x_val_scaled
-                x_val_plot = scaler_x.inverse_transform(temp)[0, feature_idx]
-            else:
-                x_val_plot = x_val_scaled
+        # ── Titel ───────────────────────────────────────────────────────────
+        if aggregate_output:
+            title = f"{model_name} - PDP+ICE für {title_feature} ({mode_tag})"
+        else:
+            title = f"{model_name} - PDP+ICE für {title_feature}: {mode_tag} und Vorhersagehorizont h = {h+1}"
+        ax.set_title(title, fontsize=16, pad=14)
 
-            y_orig = model.predict(X_test[idx : idx + 1], verbose=0)
-            y_orig = (
-                y_orig[:, horizon_step, 0]
-                if y_orig.ndim == 3
-                else y_orig[:, horizon_step]
-            )
-            y_orig = scaler_y.inverse_transform(y_orig.reshape(-1, 1))[0, 0]
-            plt.scatter(x_val_plot, y_orig, color="black", s=15, alpha=0.6)
+        from matplotlib.ticker import MaxNLocator,FixedLocator
 
-        # --------------------- Layout & Export ---------------------------
-        mode_tag = (
-            f"Eingabemittelwert über {X_test.shape[1]} Timesteps"
-            if mode == "aggregate"
-            else f"Eingabeschritt t ={timestep}"
-        )
+        # Achsenlimits
+        ymin, ymax = 0, 6
+        ax.set_ylim(ymin, ymax)
+        ax.set_xlim(vr_plot.min(), vr_plot.max())
+        ax.set_xlabel(unit)
+        ax.set_ylabel('Vorhersage [kW]')
+        ax.margins(x=0)
 
-        plt.title(
-            f"{model_name}: PDP+ICE für '{feature}' ({mode_tag}) — Vorhersagehorizont t = {horizon_step}"
-        )
-        plt.xlabel(f"{feature_unit}")
-        plt.ylabel("Solarstrom‑Vorhersage [kW]")
-        plt.ylim(0, 12)
-        plt.grid(True, linestyle=":", alpha=0.7)
-        plt.legend()
-        plt.tight_layout()
+        # Y-Ticks: sicher 0 und 6
+        yt = [t for t in ax.get_yticks() if ymin <= t <= ymax]
+        if yt[0] > ymin: yt.insert(0, ymin)
+        if yt[-1] < ymax: yt.append(ymax)
+        ax.set_yticks(yt)
 
-        out_path = os.path.join(
-            model_folder,
-            f"PDP_ICE_{feature_clean}_t{horizon_step}_{mode}.png",
-        )
-        fig.savefig(out_path, dpi=300, bbox_inches="tight")
+        # ─── Imports (einmal im File) ────────────────────────────────────────────
+        from matplotlib.ticker import AutoLocator, FixedLocator
+        import numpy as np
+
+        # ─── 1) Limits exakt setzen ─────────────────────────────────────────────
+        xmin, xmax = vr_plot.min(), vr_plot.max()
+        ax.set_xlim(xmin)
+        ax.margins(x=0)
+
+        # ─── 2) „schöne“ Auto-Ticks holen (bereits gerundet) ────────────────────
+        ax.xaxis.set_major_locator(AutoLocator())
+        auto_ticks = ax.get_xticks().tolist()
+
+        # ─── 3) Liste vorbereiten: xmin + auto + xmax (kein Duplikat) ───────────
+        ticks = sorted(set(auto_ticks) | {xmin})
+
+        # ─── 4) Adaptiv ausdünnen – aber Endpunkte NIE entfernen ────────────────
+        min_gap = 0.04 * (xmax - xmin)       # 10 % der Spanne
+        filtered = [xmin]                    # xmin bleibt auf jeden Fall
+        last = xmin
+        for t in ticks[1:]:                  # überspringt xmin
+            # lasse Tick zu, wenn Lücke ausreichend
+            if (t - last) >= min_gap:
+                filtered.append(t)
+                last = t
+
+        ticks = filtered
+
+        # ─── 5) Locator + Labels setzen ─────────────────────────────────────────
+        ax.xaxis.set_major_locator(FixedLocator(ticks))
+        ax.set_xticklabels([f"{t:.2f}" for t in ticks],
+                        rotation=45, ha='right', fontsize=8)
+
+        # ─── 6) Feine graue Linien an allen Tick-Positionen ─────────────────────
+        for x in ticks:
+            ax.axvline(x, color='gray', linestyle=':', linewidth=0.7,
+                    alpha=0.5, zorder=0)
+
+        # ─── 7) Y-Grid wie gehabt ───────────────────────────────────────────────
+        ax.grid(which='major', axis='y', linestyle=':', color='gray', alpha=0.7)
+
+        # ─── 8) Layout final glätten ────────────────────────────────────────────
+        fig.tight_layout()
+
+
+        # ── Legende unten mittig ────────────────────────────────────────────
+        fig.subplots_adjust(bottom=0.2, top=0.85)
+        handles, labels = ax.get_legend_handles_labels()
+        fig.legend(handles, labels,
+                   loc='lower center', bbox_to_anchor=(0.5, 0.03),
+                   ncol=1, frameon=False)
+
+        # ── Speichern ───────────────────────────────────────────────────────
+        suffix = 'aggAll' if aggregate_output else f'h{h+1}'
+        fname = f"PDP_ICE_{feature_clean}_{mode_tag.replace(' ','_')}_{suffix}.png"
+        fig.savefig(os.path.join(out_dir, fname), dpi=300, bbox_inches='tight')
         plt.close(fig)
-        print(f"✅ PDP+ICE (mode={mode}) für Horizon {horizon_step}: {out_path}")
-        del fig
 
+    print(f"✅ Plots in '{out_dir}' erzeugt (aggregate_output={aggregate_output}).")
 
-
-def save_combined_pdp_ice_all_timesteps(
-    model,
-    ML_DATA,
-    feature_names,
-    feature,
-    Control_Var,
-    num_time_steps: int = 6,
-    sample_indices: Optional[np.ndarray] = None,
-    num_points: int = 30,
-    is_keras_model: bool = True,
-) -> None:
-    """
-    Erstellt für jeden Input‑Timestep t = 0 … num_time_steps‑1 einen
-    PDP+ICE‑Plot und speichert *jede Grafik einzeln* als PNG.
-    """
-
-    # ---------------------------- Basics ---------------------------------
-    X_test      = ML_DATA["X_TEST"].copy()
-    feat_idx    = feature_names.index(feature)
-    model_name  = Control_Var["MLtype"]
-    feat_clean  = feature.replace("[","").replace("]","").replace(" ", "_")
-
-    if sample_indices is None:
-        sample_indices = np.random.choice(X_test.shape[0], size=20, replace=False)
-
-    out_dir = f"./{model_name}"
-    os.makedirs(out_dir, exist_ok=True)
-
-    # ----------------------- Schleife über Timesteps ---------------------
-    for ts in range(num_time_steps):
-        values = X_test[:, ts, feat_idx]
-        vmin, vmax  = np.percentile(values, [1, 99])
-        value_range = np.linspace(vmin, vmax, num_points)
-
-        ice_mat = []
-
-        fig = plt.figure(figsize=(9, 6))
-        # -------- ICE‑Kurven (Sample‑Subset) -----------------------------
-        for idx in sample_indices:
-            preds = []
-            for val in value_range:
-                X_tmp = X_test[idx:idx+1].copy()
-                X_tmp[0, ts, feat_idx] = val
-                y_hat = model.predict(X_tmp, verbose=0)
-                y_val = y_hat[0, ts] if y_hat.ndim == 2 else y_hat[0][ts]
-                preds.append(y_val)
-            ice_mat.append(preds)
-            plt.plot(value_range, preds, alpha=0.4, lw=1)
-
-        # -------- Scatterpunkte Original -------------------------------
-        for idx in sample_indices:
-            x_val = X_test[idx, ts, feat_idx]
-            y_val = model.predict(X_test[idx:idx+1], verbose=0)
-            y_val = y_val[0, ts] if y_val.ndim == 2 else y_val[0][ts]
-            plt.scatter(x_val, y_val, color="black", s=15, alpha=0.6)
-
-        # -------- PDP ----------------------------------------------------
-        ice_mat = np.asarray(ice_mat)
-        pdp = ice_mat.mean(axis=0)
-        plt.plot(value_range, pdp, color="black", lw=2.5, label="PDP")
-
-        # -------- Layout & Save -----------------------------------------
-        plt.title(f"PDP + ICE für '{feature}' (Eingabeschritt t={ts})")
-        plt.xlabel(f"{feature} (t = {ts})")
-        plt.ylabel("Solarstrom‑Vorhersage (kW)")
-        plt.grid(True, ls=":")
-        plt.tight_layout()
-
-        fname = f"{model_name}_PDP_ICE_{feat_clean}_t{ts}.png"
-        plt.savefig(os.path.join(out_dir, fname), dpi=300, bbox_inches="tight")
-        plt.close(fig)
-        print(f"✅  gespeichert: {fname}")
-        del fig
 
 
 
@@ -2135,7 +2896,7 @@ def plot_counterfactual_comparison(original_preds, counterfactual_preds, modifie
 
     plt.xlabel('Testdatensatz')
     plt.ylabel('Predicted Output')
-    plt.title('Vergleich: Original vs. Counterfactual Vorhersagen')
+    plt.title('Vergleich: Original vs. Counterfactual Vorhersagen',fontsize=16,pad=14)
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -2148,7 +2909,7 @@ def plot_counterfactual_comparison(original_preds, counterfactual_preds, modifie
     plt.scatter(modified_indices, delta[modified_indices], color='red', label='Modified Samples', zorder=5)
     plt.xlabel('Test Sample Index')
     plt.ylabel('Differenz der Vorhersage')
-    plt.title('Auswirkung von 50% Erhöhung in Column 7')
+    plt.title('Auswirkung von 50% Erhöhung in Column 7',fontsize=16,pad=14)
     plt.legend()
     plt.grid(True)
     plt.show()

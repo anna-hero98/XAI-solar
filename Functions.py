@@ -764,10 +764,14 @@ def PreProcessDataset(data, control):
     return ML_DATA, Scaler
 
 
-def last_step_mse(y_true, y_pred):
-    """MSE nur für die letzte Horizon‑Spalte (t = H‑1)."""
-    return tf.reduce_mean(tf.square(y_true[:, -1] - y_pred[:, -1]))
 
+def last_step_mse(y_true, y_pred):
+    """
+    Gibt einen einzelnen Skalar zurück, damit Keras den Wert akkumulieren kann.
+    Bewertet ausschliesslich den letzten Zeitschritt des Horizonts.
+    """
+    err = tf.square(y_true[:, -1] - y_pred[:, -1])   # (batch,)
+    return tf.reduce_mean(err)                       # -> Scalar
 
 def series_to_forecast(data, n_in, n_out, dropnan=True):
     """
@@ -824,7 +828,7 @@ def PrepareMLmodel(control, ml_data):
 
     """
     
-    filename = "Trained_" + control['MLtype']
+    filename = "Trained_" + control['MLtype'] +"_used_for_diagrams"
     
     if control['trainVSimport'] == True: #then, lets train a model
         
@@ -865,7 +869,7 @@ def PrepareMLmodel(control, ml_data):
             plt.plot(ANN_training.history[ "val_loss" ])
             plt.ylim(0.00, 0.18)
             plt.grid()
-            plt.title(f"Model Trainings- vs. Validierungsverlust ({mltype})")
+            plt.title(f"{mltype} - Model Trainings- vs. Validierungsverlust")
             plt.ylabel( "Loss" )
             plt.xlabel( "Epoch" )
             plt.legend([ "Train" , "Validation"], loc= "upper right" )
@@ -879,7 +883,7 @@ def PrepareMLmodel(control, ml_data):
             plt.plot(ANN_training.history['val_last_step_mse'], label='Val')
             plt.ylim(0.00, 0.18)
             plt.grid()
-            plt.title(f"Model Trainings- vs. Validierungsverlust t = 9 – {control['MLtype']}")
+            plt.title(f"{mltype} Model Trainings- vs. Validierungsverlust h = 10")
             plt.ylabel("Loss")
             plt.xlabel("Epoch")
             plt.legend([ "Train" , "Validation"], loc= "upper right" )
@@ -1040,9 +1044,11 @@ def train_CNN(data, control):
     train_data = data['X_TRAIN']#.values.reshape(len(data['X_TRAIN'].index), pre+1, len(features))
     validation_data = data['X_VAL']#.values.reshape(len(data['X_VAL'].index), pre+1, len(features))
     
-    train_target = data['Y_TRAIN']#.values.reshape(len(data['Y_TRAIN'].index),hor)
-    validation_target = data['Y_VAL']#.values.reshape(len(data['Y_VAL'].index),hor)
+    #train_target = data['Y_TRAIN']#.values.reshape(len(data['Y_TRAIN'].index),hor)
+    #validation_target = data['Y_VAL']#.values.reshape(len(data['Y_VAL'].index),hor)
     
+    train_target      = np.squeeze(data['Y_TRAIN'], axis=-1)
+    validation_target = np.squeeze(data['Y_VAL'],  axis=-1)
     ##### Designing Neuronal Network #######
     ML = Sequential() #initialize
     #ML.add(TimeDistributed(Masking(mask_value=999, input_shape=(pre+1, len(features))))) #add the mask so 999 = nan and are not taken into account
@@ -1059,8 +1065,11 @@ def train_CNN(data, control):
            optimizer=control["CNN"]["Optimizer"],
            metrics=[last_step_mse])         
     ML.summary()
+    print(train_target.shape, validation_target.shape)
+
     
-    
+    #train_target = np.expand_dims(train_target, axis=-1)
+    #validation_target = np.expand_dims(validation_target, axis=-1)
     ANN_training = ML.fit(train_data, train_target,
                 epochs = control["CNN"]["epo_num"], 
                 batch_size = control["CNN"]["n_batch"],
@@ -1252,6 +1261,7 @@ def post_process(control, RESULTS):
     mse_av  = mse.mean().iloc[0]
 
     last_h   = rmse.index[-1]
+   # last_h = int(last_h) +1
     rmse_end = rmse.iloc[last_h, 0]
     mae_end  = mae.iloc[last_h, 0]
     mse_end  = mse.iloc[last_h, 0]
@@ -1267,9 +1277,9 @@ def post_process(control, RESULTS):
     ax.set_ylabel("RMSE")
     ax.set_xlabel("Time Horizon")
 
-    info = (f"RMSE  Ø {rmse_av:.3f}  |  t={last_h}: {rmse_end:.3f}\n"
-            f"MAE   Ø {mae_av:.3f}  |  t={last_h}: {mae_end:.3f}\n"
-            f"MSE   Ø {mse_av:.3f}  |  t={last_h}: {mse_end:.3f}")
+    info = (f"RMSE  Ø {rmse_av:.3f}  |  h = {last_h+1}: {rmse_end:.3f}\n"
+            f"MAE   Ø {mae_av:.3f}  |  h = {last_h+1}: {mae_end:.3f}\n"
+            f"MSE   Ø {mse_av:.3f}  |  h = {last_h+1}: {mse_end:.3f}")
     ax.text(0.98, 0.98, info, transform=ax.transAxes, 
             fontsize=9, va="top", ha="right",
             bbox=dict(boxstyle="round", fc="white", alpha=0.8, lw=0))
@@ -1288,8 +1298,8 @@ def post_process(control, RESULTS):
     fig = plt.figure()
     rmse.loc[last_h].plot.bar()
     plt.ylabel("RMSE")
-    plt.title(f"{MLtype}: RMSE Horizon t={last_h}")
-    fname_last = f"{MLtype}/RMSE_last_t{last_h}.png"
+    plt.title(f"{MLtype}: RMSE Horizon t={last_h+1}")
+    fname_last = f"{MLtype}/RMSE_last_t{last_h+1}.png"
     plt.tight_layout()
     plt.savefig(fname_last, dpi=500)
     plt.close(fig)
