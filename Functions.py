@@ -828,7 +828,7 @@ def PrepareMLmodel(control, ml_data):
 
     """
     
-    filename = "Trained_" + control['MLtype'] +"_used_for_diagrams"
+    filename = "Trained_" + control['MLtype'] 
     
     if control['trainVSimport'] == True: #then, lets train a model
         

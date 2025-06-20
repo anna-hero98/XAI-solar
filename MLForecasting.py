@@ -6,7 +6,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # Forces CPU usage if needed
 
 from Functions import import_SOLETE_data, import_PV_WT_data, PreProcessDataset  
 from Functions import PrepareMLmodel, TestMLmodel, post_process
-from counterfactualMethods import *
+from XAImethods import *
 import numpy as np
 import random
 import shap
@@ -20,7 +20,8 @@ from functools import partial
 #import timeshap.explainer as tse
 #import timeshap.plot as tsp
 
-
+import os, numpy as np
+import tensorflow as tf
 
 # TensorFlow/Keras imports
 import tensorflow
@@ -40,7 +41,7 @@ Control_Var = {
     '_description_' : 'Holds variables that define the behaviour of the algorithm.',
     'resolution' : '60min', # 1sec, 1min, 5min, or 60min
     'SOLETE_builvsimport': 'Build', # 'Build' to expand the dataset, 'Import' to load an existing expansion
-    'SOLETE_save': False, # if True and 'Build', saves the expanded SOLETE dataset
+    'SOLETE_save': True, # if True and 'Build', saves the expanded SOLETE dataset
     'trainVSimport' : False, # True to train ML model, False to import a saved model
     'saveMLmodel' : False, # if True and trainVSimport is True, saves the trained model
     'Train_Val_Test' : [70, 20, 10], # Train-Validation-Test division in percentages
@@ -48,14 +49,19 @@ Control_Var = {
     'IntrinsicFeature' : 'P_Solar[kW]', # feature to be predicted
     'PossibleFeatures': [
         'TEMPERATURE[degC]', 'HUMIDITY[%]', 'WIND_SPEED[m1s]', 'WIND_DIR[deg]',
-        'GHI[kW1m2]', 'POA Irr[kW1m2]', 'P_Gaia[kW]', 
+        'GHI[kW1m2]', 'POA Irr[kW1m2]', 
+        'P_Gaia[kW]', 
         'P_Solar[kW]', #comment out for rf and svm
-        'Pressure[mbar]', 'Pac', 'Pdc', 'TempModule', 'TempCell',
+        'Pressure[mbar]', 
+        'Pac',
+          'Pdc', 'TempModule',
+          'TempCell',
         'TempModule_RP',  # Typically commented out due to heavy computation
         'HoursOfDay', 'MeanPrevH', 'StdPrevH',
-        'MeanWindSpeedPrevH', 'StdWindSpeedPrevH'
+        'MeanWindSpeedPrevH', 
+        'StdWindSpeedPrevH'
     ],
-    'MLtype' : 'CNN',      # One of: 'RF', 'SVM', 'LSTM', 'CNN', or 'CNN_LSTM'
+    'MLtype' : 'CNN_LSTM',      # One of: 'RF', 'SVM', 'LSTM', 'CNN', or 'CNN_LSTM'
     'H' : 10,              # Forecast horizon in number of samples
     'PRE' : 5,             # Number of previous samples used as input -- total PRE + 1
 }
@@ -142,7 +148,7 @@ results = TestMLmodel(Control_Var, ML_DATA, model, Scaler)
 analysis = post_process(Control_Var, results)
 
 
-### from here on my code
+### Ab hier mein Code
 print("==== Logging ML_DATA  ====")
 for key, arr in ML_DATA.items():
     if isinstance(arr, np.ndarray):
@@ -191,8 +197,6 @@ else:
     bg_indices = random.sample(range(X_test.shape[0]), num_bg_samples)
     np.save(BG_PATH, bg_indices)
 
-import os, numpy as np
-import tensorflow as tf
 
 # Für TF2 im Kompatibilitätsmodus:
 tf.compat.v1.disable_eager_execution()
@@ -206,7 +210,7 @@ model_name   = MLtype
 
 idx_dir      = os.path.join(".", model_name, "bg_indices")   
 os.makedirs(idx_dir, exist_ok=True)
-BG_PATH_pos  = os.path.join(idx_dir, "top100_pred_h9.npy")   # pro Modell einzigartig
+BG_PATH_pos  = os.path.join(idx_dir, "top100_pred_h9.npy")   
 # ------------------------------------------------------------------
 
 num_samples  = 100
@@ -240,7 +244,7 @@ else:
     top_idx = np.argsort(y_pred_h9)[-num_samples:][::-1]
     bg_indices_pos = top_idx.copy()
 
-    # Debug-Ausgabe (erste 10 Zeilen)
+    # Debug-Ausgabe
     print("Rang Sample  Input_t5[kW]  y_pred_h9[kW]  y_true_h9[kW]")
     for rank, idx in enumerate(bg_indices_pos[:10], 1):
         x5_scaled = X_test[idx, t_in, p_solar_col]
@@ -253,10 +257,7 @@ else:
     print(f"✅ Hintergrund-Indizes gespeichert unter '{BG_PATH_pos}'")
 
 # ------------------------------------------------------------------
-# Ab hier können Sie bg_indices_pos an cf_scatter_percentP_ übergeben:
-# cf_scatter_percentP_(..., bg_idx=bg_indices_pos, ...)
-
-
+#Erste 30 Indices für die ICEs
 sample_indices = bg_indices[:30] 
 
 idx_file = 'selected_indices.txt'
@@ -265,54 +266,17 @@ if not os.path.exists(idx_file):
 
 with open(idx_file, 'r') as f:
     selected_indices = [int(line.strip()) for line in f if line.strip().isdigit()]
-"""
-print(f"Verwende folgende sample_id(s): {selected_indices}")
-# 2) Für jede index eine Counterfactual-Tabelle erzeugen
-all_cfs = {}
-horizons = 10                      # Zahl der Forecast-Schritte
-
-for idx in selected_indices:
-    print(f"\n=== Generiere CFs für sample_id = {idx} ===")
-
-for h in range(horizons):
-    cf_df = run_counterfactuals(
-        model,
-        ML_DATA,
-        Control_Var,
-        sample_id=idx,
-        total_CFs=2,             # oder anpassen
-        desired_range=(4.0, 7.0) # oder anpassen
-    )
-    all_cfs[idx] = cf_df
-    cf_preds  = model.predict(cf_df[feature_cols]).reshape(len(cf_df), horizons)
-    cf_df[f"new_pred_t{h+1}"] = cf_preds[:, h]
-
-    pred_cols = [f"new_pred_t{h+1}" for h in range(horizons)]
 
 
-# 3) Optional: Ergebnisse speichern
-import pandas as pd
-with pd.ExcelWriter('counterfactuals_batch.xlsx') as writer:
-    for idx, df in all_cfs.items():
-        sheet_name = f"CF_{idx}"
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-print("Fertig: Alle CFs in 'counterfactuals_batch.xlsx' gespeichert.")
-delta_matrix, feat_ranking = analyze_counterfactuals(
-    cf_df, X_test, Xscaler,
-    sample_id=0,
-    feature_names=ML_DATA["xcols"],
-    PRE=Control_Var["PRE"]
-)
+#Counterfactual berechnen, die die Vorhersage auf einen bestimmten Wert bringen
 
-shap_vals = get_explanations_2D(model, ML_DATA, X_test, feature_names, Control_Var=Control_Var, horizon_steps=list(range(10)))
-"""
 # ──────────────────────────────────────────────────────────────
 # 0) Parameter
 # ──────────────────────────────────────────────────────────────
 desired_range_orig = (6.0, 7.0)   # Zielwert-Intervall (kW)
 n_cf_per_sample    = 2             # zwei Counterfactuals je Sample
-target_horizon     = 9             # 0-basiert: Position t+10
+target_horizon     = 9             # 0-basiert: Position +1 Horizont in der Arbeit
 
 # ──────────────────────────────────────────────────────────────
 # 1) Initialisierung
@@ -324,6 +288,7 @@ max_cfs = 0           # größte CF-Anzahl pro Sample
 # ------------------------------------------------------------------
 # 2) Counterfactuals generieren und sammeln
 # ------------------------------------------------------------------
+
 for sample_id in bg_indices_pos[:1]:
     print(f"\n=== Counterfactuals für sample_id = {sample_id} ===")
 
@@ -342,7 +307,7 @@ for sample_id in bg_indices_pos[:1]:
     all_cfs[sample_id] = res
 
 # ------------------------------------------------------------------
-# 3) Übersichtstabellen (Zielwerte)
+# 3) Übersichtstabellen erstellen
 # ------------------------------------------------------------------
 for sid, info in all_cfs.items():
     cf_vals = info["y_cfs"]
@@ -377,7 +342,7 @@ file_path = Path(model_name) / "data" / "cf_summary.xlsx"
 file_path.parent.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------------------------------------------
-# 5) Alle Tabellen in **eine** Excel-Datei schreiben
+# 5) Alle Tabellen in eine Excel-Datei schreiben
 # ------------------------------------------------------------------
 with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
     # 5-a) Unskalierte Zielwerte
@@ -435,87 +400,26 @@ with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
 
 print(f"✅ Excel gespeichert unter: {file_path}")
 
-"""
-
-for idx in selected_indices:
-    print(f"\n=== Generiere CFs für sample_id = {idx} ===")
-
-    res = compute_ts_counterfactual_dice(
-        model         = model,
-        ML_DATA       = ML_DATA,
-        feature_names = feature_names,
-        idx           = idx,
-        total_CFs     = 2,
-        desired_range = desired_range_orig,
-        method        = "random",
-        x_scaler      = Xscaler,   
-        y_scaler      = Yscaler    
-    )
-
-    print(f"Vorheriger Vorhersagewert (t+1): {res['y_orig']:.3f}")
-    for i, ycf in enumerate(res['y_cfs'], 1):
-        print(f"CF{i}-Vorhersage (t+1):        {ycf:.3f}")
-
-    all_cfs[idx] = res['cf_examples_unscaled']
-
-
-
-# Beispielaufruf:
-result = compute_ts_counterfactual(
+#%% LIME Erklärungen
+#Erstellt LIME Erklärungen für die Testdaten für den 10. Vorhersage-Horizont
+selected_ids = generate_lime_explanations(
     model=model,
-    ML_DATA={'X_TEST': X_test},
+    X_train=X_train,
+    X_test=X_test,
     feature_names=feature_names,
-    feature='GHI[kW1m2]',
-    idx=0,
-    y_target=0.5,
-    norm='l1',
-    per_timestep=False,
-    bounds=(0, None),
-    max_iter=100
-)
-x_cf, y_orig, y_cf = result['x_cf'], result['y_orig'], result['y_cf']
-
-X = ML_DATA['X_TEST'] if bg_indices is None else ML_DATA['X_TEST'][bg_indices]
-feat_idx = feature_names.index(feature_names[0])  # Index of the feature to be modified
-y_target = 0.5  # Target value for the feature
-norm = 0.1  # Normalization factor for the feature
-
-    # Compute CF for each sample
-X_cf = np.array([
-    generate_ts_counterfactual(x, model, feat_idx, y_target, norm)
-    for x in X
-    ])
-y_orig = model.predict(X).ravel()
-y_cf   = model.predict(X_cf).ravel()
-    # Plot differences
-plt.figure(figsize=(6,4))
-plt.scatter(np.arange(len(y_orig)), y_orig, label='Original')
-plt.scatter(np.arange(len(y_cf)), y_cf, label='Counterfactual')
-plt.legend()
-plt.xlabel('Sample index')
-plt.ylabel('Prediction')
-plt.title(f'Counterfactual to target {y_target}')
-plt.grid(True)
-plt.show()
-
-
-X_train_re = X_train.reshape(X_train.shape[0], -1)
-X_test_re = X_test.reshape(X_test.shape[0], -1)
-# Initialize LIME Explainer
-explainer = LimeTabularExplainer(
-    training_data=X_train.reshape(X_train_re.shape[0], -1),  # Flatten only for LIME explainer
-    feature_names=[f"{col}_{i}" for col in feature_names for i in range(X_train.shape[1])],  
-    mode='regression',
-    discretize_continuous=False
+    ml_type=ml_type,
+    horizon_step=9
 )
 
-
+#Erstellt LIME Erklärungen aggregiert
 selected_ids = generate_lime_explanations(
     model=model,
     X_train=X_train,
     X_test=X_test,
     feature_names=feature_names,
     ml_type=ml_type)
+
+#Erstellt LIME Erklärungen für die Testdaten für den 6. Eingabegorizont und 10. Vorhersage-Horizont
 selected_ids = generate_lime_explanations(
     model=model,
     X_train=X_train,
@@ -526,8 +430,57 @@ selected_ids = generate_lime_explanations(
     input_time_step=5
 )
 
+
+#SHAP Berechnung
+shap_vals = get_explanations_2D(model, ML_DATA, X_test, feature_names, Control_Var=Control_Var, horizon_steps=list(range(10)))
+
+
+#Schleife, die alle Counterfactuals und PDP & ICE für alle Features berechnet
 for feature in feature_names:
 
+    #PDP & ICE für alle Features
+    save_combined_pdp_ice_all_inputs_horizon_output(
+        model             = model,
+        ML_DATA           = ML_DATA,
+        feature_names     = feature_names,
+        feature           = feature,
+        Control_Var       = Control_Var,
+        scaler_y          = Yscaler,
+        scaler_x          = Xscaler,
+        sample_indices    = sample_indices,
+        mode              = "aggregate"
+    )
+
+    # 2) Einzelnen Input-Step 6 betrachten mit den ersten 30 der zufälligen Werte
+    save_combined_pdp_ice_all_inputs_horizon_output(
+        model             = model,
+        ML_DATA           = ML_DATA,
+        feature_names     = feature_names,
+        feature           = feature,
+        Control_Var       = Control_Var,
+        scaler_y          = Yscaler,
+        scaler_x          = Xscaler,
+        sample_indices    = sample_indices,
+        mode              = "single",
+        timestep          = 5
+    )
+
+    # 3) Aggregierte Eingabewerte und Vorhersagehorizont 10 mit den ersten 30 der zufälligen Werten
+    save_combined_pdp_ice_all_inputs_horizon_output(
+        model             = model,
+        ML_DATA           = ML_DATA,
+        feature_names     = feature_names,
+        feature           = feature,
+        Control_Var       = Control_Var,
+        scaler_y          = Yscaler,
+        scaler_x          = Xscaler,
+        sample_indices    = sample_indices,
+        mode              = "aggregate",
+        num_horizon_steps = 10,
+        aggregate_output  = True
+    )
+
+    #Counterfacuals aggregiert mit den zufälligen Werten
     cf_scatter_percent_zufällig(
         ML_DATA=ML_DATA,
         model=model,
@@ -543,6 +496,7 @@ for feature in feature_names:
 
     )
 
+    #Counterfacuals für den sechsten Eingabewert und den zehnten Vorhersagehorizont mit den zufälligen Werten
     cf_scatter_percent_zufällig(
         ML_DATA=ML_DATA,
         model=model,
@@ -560,22 +514,9 @@ for feature in feature_names:
         aggregate_output_timesteps=False,
         debug=True
     )
-    cf_scatter_percent_max(
-        ML_DATA=ML_DATA,
-        model=model,
-        feature_names=feature_names,
-        feature=feature,
-        factors=(0.5, 0.75, 1.25, 1.5),
-        Control_Var=Control_Var,
-        bg_idx=bg_indices_pos,
-        #bg_idx=bg_indices_pos,  # Verwenden Sie bg_indices_pos für Top-100 Indizes       
-        jitter=0.3,
-        x_scaler      = Xscaler,
-        y_scaler      = Yscaler,
-        debug=True
 
-    )
 
+    #Counterfacuals für den sechsten Eingabewert und den zehnten Vorhersagehorizont mit den maximalen Werten
     cf_scatter_percent_max(
         ML_DATA=ML_DATA,
         model=model,
@@ -593,30 +534,4 @@ for feature in feature_names:
         aggregate_output_timesteps=False,
         debug=True
     )
-    save_combined_pdp_ice_all_inputs_horizon_output(
-        model, ML_DATA, feature_names, feature, Control_Var, Yscaler,
-        scaler_x=Xscaler,  
-        mode="aggregate"
-    )
-
-    save_combined_pdp_ice_all_inputs_horizon_output(
-        model, ML_DATA, feature_names, feature, Control_Var, Yscaler,
-        scaler_x=Xscaler,
-        mode="single",
-        timestep=5
-    )
-
-
-    save_combined_pdp_ice_all_inputs_horizon_output(
-        model            = model,
-        ML_DATA          = ML_DATA,
-        feature_names    = feature_names,
-        feature          = feature,
-        Control_Var      = Control_Var,
-        scaler_y         = Yscaler,
-        scaler_x         = Xscaler,
-        mode             = "aggregate",
-        num_horizon_steps= 10,            
-        aggregate_output = True           
-    )
-"""
+    
